@@ -19,12 +19,13 @@ windows_icon = (
     else None
 )
 macos_icon = str(project_root / "assets" / "app-icon.icns")
+app_assets = [(str(project_root / "assets" / "app-icon.png"), "assets")]
 
 a = Analysis(
     [str(project_root / "desktop_main.py")],
     pathex=[str(project_root)],
     binaries=playwright_binaries + ctk_binaries,
-    datas=playwright_datas + ctk_datas,
+    datas=playwright_datas + ctk_datas + app_assets,
     hiddenimports=playwright_hiddenimports + ctk_hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -68,14 +69,14 @@ collection = COLLECT(
 if sys.platform == "darwin":
     app = BUNDLE(
         collection,
-        name="BaiduPartnerFlice.app",
+        name="百度资质自动提交工具.app",
         icon=macos_icon,
         bundle_identifier="com.baidu.partner.flice",
-        version="0.30.1",
+        version="0.30.2",
         info_plist={
             "CFBundleDisplayName": "百度资质自动提交工具",
-            "CFBundleShortVersionString": "0.30.1",
-            "CFBundleVersion": "0.30.1",
+            "CFBundleShortVersionString": "0.30.2",
+            "CFBundleVersion": "0.30.2",
             "NSHighResolutionCapable": True,
         },
     )

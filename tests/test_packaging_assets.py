@@ -7,7 +7,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = PROJECT_ROOT / "assets"
-EXPECTED_VERSION = "0.30.1"
+EXPECTED_VERSION = "0.30.2"
 
 
 def test_source_png_is_large_rgba_image() -> None:
@@ -53,6 +53,10 @@ def test_pyinstaller_spec_uses_platform_icons() -> None:
 
     assert '"assets" / "app-icon.ico"' in spec
     assert '"assets" / "app-icon.icns"' in spec
+    assert '"assets" / "app-icon.png"' in spec
+    assert 'app_assets = [(' in spec
+    assert 'datas=playwright_datas + ctk_datas + app_assets' in spec
+    assert 'name="百度资质自动提交工具.app"' in spec
     assert "icon=windows_icon" in spec
     assert "icon=macos_icon" in spec
 
@@ -76,8 +80,10 @@ def test_desktop_package_versions_are_consistent() -> None:
 
     assert pyproject["project"]["version"] == EXPECTED_VERSION
     assert f'__version__ = "{EXPECTED_VERSION}"' in package_init
-    assert "filevers=(0, 30, 1, 0)" in windows_version
-    assert "prodvers=(0, 30, 1, 0)" in windows_version
+    assert "filevers=(0, 30, 2, 0)" in windows_version
+    assert "prodvers=(0, 30, 2, 0)" in windows_version
     assert windows_version.count(f'"{EXPECTED_VERSION}"') == 2
     assert spec.count(f'"{EXPECTED_VERSION}"') == 3
-    assert workflow.count(f"BaiduPartnerFlice-{EXPECTED_VERSION}-") == 3
+    assert workflow.count(f"百度资质自动提交工具-{EXPECTED_VERSION}-") == 3
+    assert "pattern: 百度资质自动提交工具-*" in workflow
+    assert "BaiduPartnerFlice.exe" in workflow

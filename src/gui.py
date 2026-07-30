@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import END, filedialog, messagebox, ttk
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 from . import __version__
 from .application import ValidationReport, run_validated_companies, validate_input_directory
@@ -22,6 +23,7 @@ from .run_logging import (
     create_run_log,
     list_run_logs,
 )
+from .resources import application_asset_path
 from .workflow import WorkflowConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -66,6 +68,9 @@ class DesktopApplication:
         self.closed = False
         self.current_page = "task"
         self.history_paths: list[Path] = []
+        self.app_icon_image: Image.Image | None = None
+        self.brand_icon: ctk.CTkImage | None = None
+        self.window_icon: ImageTk.PhotoImage | None = None
 
         self.input_path = ctk.StringVar()
         self.status = ctk.StringVar(value="等待选择输入目录")
@@ -76,12 +81,22 @@ class DesktopApplication:
         self.root.minsize(1040, 680)
         self.root.configure(fg_color=Palette.APP_BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._configure_window_icon()
 
         self._configure_table_style()
         self._build_shell()
         self._show_page("task")
         self._refresh_log_history()
         self.root.after(self.POLL_INTERVAL_MS, self._poll_events)
+
+    def _configure_window_icon(self) -> None:
+        with Image.open(application_asset_path("app-icon.png")) as source:
+            self.app_icon_image = source.convert("RGBA")
+        self.window_icon = ImageTk.PhotoImage(
+            self.app_icon_image,
+            master=self.root,
+        )
+        self.root.iconphoto(True, self.window_icon)
 
     def _configure_table_style(self) -> None:
         style = ttk.Style()
@@ -161,21 +176,20 @@ class DesktopApplication:
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="ew", padx=22, pady=(28, 34))
-        mark = ctk.CTkFrame(
-            brand,
-            width=42,
-            height=42,
-            fg_color=Palette.PRIMARY,
-            corner_radius=12,
+        if self.app_icon_image is None:
+            raise RuntimeError("应用图标尚未加载")
+        self.brand_icon = ctk.CTkImage(
+            light_image=self.app_icon_image,
+            dark_image=self.app_icon_image,
+            size=(48, 48),
         )
-        mark.grid(row=0, column=0, rowspan=2)
-        mark.grid_propagate(False)
         ctk.CTkLabel(
-            mark,
-            text="资",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color="#FFFFFF",
-        ).place(relx=0.5, rely=0.5, anchor="center")
+            brand,
+            text="",
+            image=self.brand_icon,
+            width=48,
+            height=48,
+        ).grid(row=0, column=0, rowspan=2)
         ctk.CTkLabel(
             brand,
             text="资质助手",
@@ -215,16 +229,10 @@ class DesktopApplication:
         footer.grid(row=7, column=0, sticky="sew", padx=22, pady=24)
         ctk.CTkLabel(
             footer,
-            text="单 worker · 串行提交",
-            text_color="#94A3B8",
-            font=ctk.CTkFont(size=11),
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            footer,
             text=f"Version {__version__}",
             text_color="#64748B",
             font=ctk.CTkFont(size=10),
-        ).pack(anchor="w", pady=(5, 0))
+        ).pack(anchor="w")
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self.content, fg_color="transparent", height=94)

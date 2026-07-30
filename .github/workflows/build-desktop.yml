@@ -21,13 +21,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: BaiduPartnerFlice-0.30.1-windows-x64
+            artifact: 百度资质自动提交工具-0.30.2-Windows-x64
             platform: windows
           - os: macos-15
-            artifact: BaiduPartnerFlice-0.30.1-macos-arm64
+            artifact: 百度资质自动提交工具-0.30.2-macOS-arm64
             platform: macos
           - os: macos-15-intel
-            artifact: BaiduPartnerFlice-0.30.1-macos-x64
+            artifact: 百度资质自动提交工具-0.30.2-macOS-x64
             platform: macos
 
     runs-on: ${{ matrix.os }}
@@ -67,7 +67,7 @@ jobs:
       - name: Self-check macOS application
         if: matrix.platform == 'macos'
         shell: bash
-        run: dist/BaiduPartnerFlice.app/Contents/MacOS/BaiduPartnerFlice --self-check
+        run: dist/百度资质自动提交工具.app/Contents/MacOS/BaiduPartnerFlice --self-check
 
       - name: Package Windows application
         if: matrix.platform == 'windows'
@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/BaiduPartnerFlice.app" \
+            "dist/百度资质自动提交工具.app" \
             "${{ matrix.artifact }}.zip"
 
       - name: Upload package
@@ -104,7 +104,7 @@ jobs:
       - name: Download all packages
         uses: actions/download-artifact@v4
         with:
-          pattern: BaiduPartnerFlice-*
+          pattern: 百度资质自动提交工具-*
           path: release
           merge-multiple: true
 
