@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import struct
+import tomllib
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = PROJECT_ROOT / "assets"
+EXPECTED_VERSION = "0.30.1"
 
 
 def test_source_png_is_large_rgba_image() -> None:
-    payload = (ASSETS / "app-icon-v3.png").read_bytes()
+    payload = (ASSETS / "app-icon.png").read_bytes()
 
     assert payload[:8] == b"\x89PNG\r\n\x1a\n"
     width, height, bit_depth, color_type, _, _, _ = struct.unpack(
@@ -53,3 +55,29 @@ def test_pyinstaller_spec_uses_platform_icons() -> None:
     assert '"assets" / "app-icon.icns"' in spec
     assert "icon=windows_icon" in spec
     assert "icon=macos_icon" in spec
+
+
+def test_desktop_package_versions_are_consistent() -> None:
+    pyproject = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    package_init = (PROJECT_ROOT / "src" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    windows_version = (
+        PROJECT_ROOT / "packaging" / "version_info.txt"
+    ).read_text(encoding="utf-8")
+    spec = (
+        PROJECT_ROOT / "packaging" / "BaiduPartnerFlice.spec"
+    ).read_text(encoding="utf-8")
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "build-desktop.yml"
+    ).read_text(encoding="utf-8")
+
+    assert pyproject["project"]["version"] == EXPECTED_VERSION
+    assert f'__version__ = "{EXPECTED_VERSION}"' in package_init
+    assert "filevers=(0, 30, 1, 0)" in windows_version
+    assert "prodvers=(0, 30, 1, 0)" in windows_version
+    assert windows_version.count(f'"{EXPECTED_VERSION}"') == 2
+    assert spec.count(f'"{EXPECTED_VERSION}"') == 3
+    assert workflow.count(f"BaiduPartnerFlice-{EXPECTED_VERSION}-") == 3

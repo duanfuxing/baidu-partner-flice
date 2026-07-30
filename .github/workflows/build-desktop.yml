@@ -21,13 +21,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: BaiduPartnerFlice-0.30.0-windows-x64
+            artifact: BaiduPartnerFlice-0.30.1-windows-x64
             platform: windows
           - os: macos-15
-            artifact: BaiduPartnerFlice-0.30.0-macos-arm64
+            artifact: BaiduPartnerFlice-0.30.1-macos-arm64
             platform: macos
           - os: macos-15-intel
-            artifact: BaiduPartnerFlice-0.30.0-macos-x64
+            artifact: BaiduPartnerFlice-0.30.1-macos-x64
             platform: macos
 
     runs-on: ${{ matrix.os }}

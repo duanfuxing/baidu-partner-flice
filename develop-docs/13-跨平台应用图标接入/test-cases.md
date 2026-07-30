@@ -2,7 +2,7 @@
 
 ## 资源
 
-1. v3 PNG 能读取为 RGBA，四角 alpha 为 0。
+1. 正式 PNG `assets/app-icon.png` 能读取为 RGBA，四角 alpha 为 0。
 2. ICO 能读取并包含 Windows 常用尺寸。
 3. ICNS 文件存在且非空。
 
@@ -21,6 +21,10 @@
 
 ## 验证结果
 
+- 2026-07-30 新版正式图标资源定向测试：4 项通过。
+- 正式 PNG：1254×1254、8-bit RGBA。
+- 新版 ICO：包含 7 个 Windows 常用尺寸图层。
+- 新版 ICNS：macOS ICNS 容器有效。
 - 图标资源与冻结自检定向测试：6 项通过。
 - 完整测试：74 项通过。
 - ICO：识别为包含 7 个图层的 Windows icon resource。
