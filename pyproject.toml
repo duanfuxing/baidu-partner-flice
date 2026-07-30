@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baidu-partner-flice"
+version = "0.30.0"
+description = "百度客户资质流程 1-6 自动化工具"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=5.2,<6",
+    "playwright>=1.45,<2",
+    "portalocker>=3,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pyinstaller>=6.10,<7",
+]
+
+[project.scripts]
+baidu-partner-flice = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

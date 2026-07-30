@@ -1,0 +1,8 @@
+# Runtime dependencies
+customtkinter>=5.2,<6
+playwright>=1.45,<2
+portalocker>=3,<4
+
+# Development and test dependencies
+pytest>=8,<9
+pyinstaller>=6.10,<7

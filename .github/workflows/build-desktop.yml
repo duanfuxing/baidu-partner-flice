@@ -1,0 +1,118 @@
+name: Build desktop packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: BaiduPartnerFlice-0.30.0-windows-x64
+            platform: windows
+          - os: macos-15
+            artifact: BaiduPartnerFlice-0.30.0-macos-arm64
+            platform: macos
+          - os: macos-15-intel
+            artifact: BaiduPartnerFlice-0.30.0-macos-x64
+            platform: macos
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.8"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build desktop application
+        run: python -m PyInstaller --noconfirm --clean packaging/BaiduPartnerFlice.spec
+
+      - name: Self-check Windows application
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $process = Start-Process `
+            -FilePath ".\dist\BaiduPartnerFlice\BaiduPartnerFlice.exe" `
+            -ArgumentList "--self-check" `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Desktop self-check failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Self-check macOS application
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: dist/BaiduPartnerFlice.app/Contents/MacOS/BaiduPartnerFlice --self-check
+
+      - name: Package Windows application
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist/BaiduPartnerFlice" `
+            -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Package macOS application
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/BaiduPartnerFlice.app" \
+            "${{ matrix.artifact }}.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: BaiduPartnerFlice-*
+          path: release
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "百度资质自动提交工具 $GITHUB_REF_NAME" \
+            --generate-notes
