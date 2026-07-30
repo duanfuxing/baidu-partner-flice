@@ -13,6 +13,12 @@ windows_version_file = (
     if sys.platform == "win32"
     else None
 )
+windows_icon = (
+    str(project_root / "assets" / "app-icon.ico")
+    if sys.platform == "win32"
+    else None
+)
+macos_icon = str(project_root / "assets" / "app-icon.icns")
 
 a = Analysis(
     [str(project_root / "desktop_main.py")],
@@ -41,6 +47,7 @@ exe = EXE(
     upx=False,
     console=False,
     version=windows_version_file,
+    icon=windows_icon,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -62,7 +69,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         collection,
         name="BaiduPartnerFlice.app",
-        icon=None,
+        icon=macos_icon,
         bundle_identifier="com.baidu.partner.flice",
         version="0.30.0",
         info_plist={

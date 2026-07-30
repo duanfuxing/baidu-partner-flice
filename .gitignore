@@ -18,3 +18,6 @@ build/
 dist/
 *.spec.local
 *.log
+assets/*-source.png
+assets/app-icon.png
+assets/app-icon-v2.png
