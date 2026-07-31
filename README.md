@@ -50,10 +50,9 @@ pytest
 
 `.github/workflows/build-desktop.yml` 在以下场景构建：
 
-- 推送到 `master` 或 `main`
 - Pull Request
 - 手工触发
-- 推送 `v*` 标签
+- 推送 `v*` 标签；普通 `master` 或 `main` 分支推送不打包
 
 构建产物包括：
 

@@ -11,6 +11,17 @@ ARM64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-arm64.iss
 EXPECTED_VERSION = "0.30.6"
 
 
+def test_workflow_does_not_build_on_branch_push() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    triggers = workflow.split("permissions:", maxsplit=1)[0]
+
+    assert "branches:" not in triggers
+    assert 'tags:\n      - "v*"' in triggers
+    assert "workflow_dispatch:" in triggers
+    assert "pull_request:" in triggers
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in workflow
+
+
 def test_workflow_builds_four_native_installers() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
