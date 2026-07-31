@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baidu-partner-flice"
-version = "0.30.2"
+version = "0.30.3"
 description = "百度客户资质流程 1-6 自动化工具"
 requires-python = ">=3.11"
 dependencies = [

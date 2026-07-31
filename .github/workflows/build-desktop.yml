@@ -21,13 +21,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: 百度资质自动提交工具-0.30.2-Windows-x64
+            artifact: BaiduPartnerFlice-0.30.3-Windows-x64
             platform: windows
           - os: macos-15
-            artifact: 百度资质自动提交工具-0.30.2-macOS-arm64
+            artifact: BaiduPartnerFlice-0.30.3-macOS-arm64
             platform: macos
           - os: macos-15-intel
-            artifact: 百度资质自动提交工具-0.30.2-macOS-x64
+            artifact: BaiduPartnerFlice-0.30.3-macOS-x64
             platform: macos
 
     runs-on: ${{ matrix.os }}
@@ -104,7 +104,7 @@ jobs:
       - name: Download all packages
         uses: actions/download-artifact@v4
         with:
-          pattern: 百度资质自动提交工具-*
+          pattern: BaiduPartnerFlice-*
           path: release
           merge-multiple: true
 

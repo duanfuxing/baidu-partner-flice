@@ -72,11 +72,11 @@ if sys.platform == "darwin":
         name="百度资质自动提交工具.app",
         icon=macos_icon,
         bundle_identifier="com.baidu.partner.flice",
-        version="0.30.2",
+        version="0.30.3",
         info_plist={
             "CFBundleDisplayName": "百度资质自动提交工具",
-            "CFBundleShortVersionString": "0.30.2",
-            "CFBundleVersion": "0.30.2",
+            "CFBundleShortVersionString": "0.30.3",
+            "CFBundleVersion": "0.30.3",
             "NSHighResolutionCapable": True,
         },
     )
