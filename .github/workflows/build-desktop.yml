@@ -21,25 +21,25 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            artifact: BaiduPartnerFlice-0.30.4-Windows-x64-Setup
-            package: BaiduPartnerFlice-0.30.4-Windows-x64-Setup.exe
+            artifact: BaiduPartnerFlice-0.30.5-Windows-x64-Setup
+            package: BaiduPartnerFlice-0.30.5-Windows-x64-Setup.exe
             platform: windows
             python_architecture: x64
-            windows_arm64: 0
+            installer_script: packaging\windows-installer-x64.iss
           - os: windows-11-arm
-            artifact: BaiduPartnerFlice-0.30.4-Windows-arm64-Setup
-            package: BaiduPartnerFlice-0.30.4-Windows-arm64-Setup.exe
+            artifact: BaiduPartnerFlice-0.30.5-Windows-arm64-Setup
+            package: BaiduPartnerFlice-0.30.5-Windows-arm64-Setup.exe
             platform: windows
             python_architecture: arm64
-            windows_arm64: 1
+            installer_script: packaging\windows-installer-arm64.iss
           - os: macos-15
-            artifact: BaiduPartnerFlice-0.30.4-macOS-arm64-Installer
-            package: BaiduPartnerFlice-0.30.4-macOS-arm64-Installer.pkg
+            artifact: BaiduPartnerFlice-0.30.5-macOS-arm64-Installer
+            package: BaiduPartnerFlice-0.30.5-macOS-arm64-Installer.pkg
             platform: macos
             python_architecture: arm64
           - os: macos-15-intel
-            artifact: BaiduPartnerFlice-0.30.4-macOS-x64-Installer
-            package: BaiduPartnerFlice-0.30.4-macOS-x64-Installer.pkg
+            artifact: BaiduPartnerFlice-0.30.5-macOS-x64-Installer
+            package: BaiduPartnerFlice-0.30.5-macOS-x64-Installer.pkg
             platform: macos
             python_architecture: x64
 
@@ -96,14 +96,12 @@ jobs:
           if (-not $iscc) {
             throw "Inno Setup compiler ISCC.exe was not found"
           }
-          & $iscc.FullName `
-            "/DMyAppIsArm64=${{ matrix.windows_arm64 }}" `
-            "packaging\windows-installer.iss"
+          & $iscc.FullName "${{ matrix.installer_script }}"
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
           Move-Item `
-            "installer-output\BaiduPartnerFlice-0.30.4-Windows-Setup.exe" `
+            "installer-output\BaiduPartnerFlice-0.30.5-Windows-Setup.exe" `
             "${{ matrix.package }}"
 
       - name: Build macOS installer
@@ -115,7 +113,7 @@ jobs:
             "dist/百度资质自动提交工具.app" \
             --install-location "/Applications" \
             --identifier "com.baidu.partner.flice" \
-            --version "0.30.4" \
+            --version "0.30.5" \
             "${{ matrix.package }}"
 
       - name: Upload package

@@ -7,7 +7,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = PROJECT_ROOT / "assets"
-EXPECTED_VERSION = "0.30.4"
+EXPECTED_VERSION = "0.30.5"
 
 
 def test_source_png_is_large_rgba_image() -> None:
@@ -80,8 +80,8 @@ def test_desktop_package_versions_are_consistent() -> None:
 
     assert pyproject["project"]["version"] == EXPECTED_VERSION
     assert f'__version__ = "{EXPECTED_VERSION}"' in package_init
-    assert "filevers=(0, 30, 4, 0)" in windows_version
-    assert "prodvers=(0, 30, 4, 0)" in windows_version
+    assert "filevers=(0, 30, 5, 0)" in windows_version
+    assert "prodvers=(0, 30, 5, 0)" in windows_version
     assert windows_version.count(f'"{EXPECTED_VERSION}"') == 2
     assert spec.count(f'"{EXPECTED_VERSION}"') == 3
     assert workflow.count(f"artifact: BaiduPartnerFlice-{EXPECTED_VERSION}-") == 4

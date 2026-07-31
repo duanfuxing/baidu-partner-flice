@@ -6,7 +6,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "build-desktop.yml"
 INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer.iss"
-EXPECTED_VERSION = "0.30.4"
+X64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-x64.iss"
+ARM64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-arm64.iss"
+EXPECTED_VERSION = "0.30.5"
 
 
 def test_workflow_builds_four_native_installers() -> None:
@@ -54,13 +56,20 @@ def test_windows_installer_places_onedir_bundle_in_program_files() -> None:
 
 def test_windows_installers_are_architecture_specific_and_preserve_user_data() -> None:
     installer = INSTALLER_PATH.read_text(encoding="utf-8")
+    x64_installer = X64_INSTALLER_PATH.read_text(encoding="utf-8")
+    arm64_installer = ARM64_INSTALLER_PATH.read_text(encoding="utf-8")
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert '#define MyArchitecturesAllowed "arm64"' in installer
-    assert '#define MyArchitecturesAllowed "x64os"' in installer
+    assert '#define MyArchitecturesAllowed "x64compatible"' in x64_installer
+    assert '#define MyArchitecturesAllowed "arm64"' in arm64_installer
+    assert '#include "windows-installer.iss"' in x64_installer
+    assert '#include "windows-installer.iss"' in arm64_installer
     assert "ArchitecturesAllowed={#MyArchitecturesAllowed}" in installer
     assert "ArchitecturesInstallIn64BitMode={#MyArchitecturesAllowed}" in installer
-    assert "/DMyAppIsArm64=${{ matrix.windows_arm64 }}" in workflow
+    assert "installer_script: packaging\\windows-installer-x64.iss" in workflow
+    assert "installer_script: packaging\\windows-installer-arm64.iss" in workflow
+    assert '"${{ matrix.installer_script }}"' in workflow
+    assert "MyAppIsArm64" not in workflow
     assert "[UninstallDelete]" not in installer
     assert "{localappdata}" not in installer.lower()
 

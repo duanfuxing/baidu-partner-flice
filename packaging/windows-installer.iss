@@ -1,16 +1,10 @@
 #define MyAppName "百度资质自动提交工具"
-#define MyAppVersion "0.30.4"
+#define MyAppVersion "0.30.5"
 #define MyAppPublisher "Baidu Partner Flice"
 #define MyAppExeName "BaiduPartnerFlice.exe"
 
-#ifndef MyAppIsArm64
-  #define MyAppIsArm64 0
-#endif
-
-#if MyAppIsArm64
-  #define MyArchitecturesAllowed "arm64"
-#else
-  #define MyArchitecturesAllowed "x64os"
+#ifndef MyArchitecturesAllowed
+  #error MyArchitecturesAllowed must be defined by an architecture entry script
 #endif
 
 [Setup]
