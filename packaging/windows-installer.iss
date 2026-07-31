@@ -1,5 +1,5 @@
 #define MyAppName "百度资质自动提交工具"
-#define MyAppVersion "0.30.5"
+#define MyAppVersion "0.30.6"
 #define MyAppPublisher "Baidu Partner Flice"
 #define MyAppExeName "BaiduPartnerFlice.exe"
 

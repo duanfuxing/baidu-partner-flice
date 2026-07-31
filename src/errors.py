@@ -49,11 +49,5 @@ class PageFlowError(FliceError):
     """页面导航或元素操作失败。"""
 
 
-class QualificationPendingReview(PageFlowError):
-    """目标 URL 的信息资质正在审核，当前不能覆盖处理。"""
-
-    error_code = "qualification-pending-review"
-
-
 class SchedulerError(FliceError):
     """并发调度状态读取、抢占或持久化失败。"""

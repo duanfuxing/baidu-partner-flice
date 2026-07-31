@@ -21,25 +21,25 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            artifact: BaiduPartnerFlice-0.30.5-Windows-x64-Setup
-            package: BaiduPartnerFlice-0.30.5-Windows-x64-Setup.exe
+            artifact: BaiduPartnerFlice-0.30.6-Windows-x64-Setup
+            package: BaiduPartnerFlice-0.30.6-Windows-x64-Setup.exe
             platform: windows
             python_architecture: x64
             installer_script: packaging\windows-installer-x64.iss
           - os: windows-11-arm
-            artifact: BaiduPartnerFlice-0.30.5-Windows-arm64-Setup
-            package: BaiduPartnerFlice-0.30.5-Windows-arm64-Setup.exe
+            artifact: BaiduPartnerFlice-0.30.6-Windows-arm64-Setup
+            package: BaiduPartnerFlice-0.30.6-Windows-arm64-Setup.exe
             platform: windows
             python_architecture: arm64
             installer_script: packaging\windows-installer-arm64.iss
           - os: macos-15
-            artifact: BaiduPartnerFlice-0.30.5-macOS-arm64-Installer
-            package: BaiduPartnerFlice-0.30.5-macOS-arm64-Installer.pkg
+            artifact: BaiduPartnerFlice-0.30.6-macOS-arm64-Installer
+            package: BaiduPartnerFlice-0.30.6-macOS-arm64-Installer.pkg
             platform: macos
             python_architecture: arm64
           - os: macos-15-intel
-            artifact: BaiduPartnerFlice-0.30.5-macOS-x64-Installer
-            package: BaiduPartnerFlice-0.30.5-macOS-x64-Installer.pkg
+            artifact: BaiduPartnerFlice-0.30.6-macOS-x64-Installer
+            package: BaiduPartnerFlice-0.30.6-macOS-x64-Installer.pkg
             platform: macos
             python_architecture: x64
 
@@ -101,7 +101,7 @@ jobs:
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
           Move-Item `
-            "installer-output\BaiduPartnerFlice-0.30.5-Windows-Setup.exe" `
+            "installer-output\BaiduPartnerFlice-0.30.6-Windows-Setup.exe" `
             "${{ matrix.package }}"
 
       - name: Build macOS installer
@@ -113,7 +113,7 @@ jobs:
             "dist/百度资质自动提交工具.app" \
             --install-location "/Applications" \
             --identifier "com.baidu.partner.flice" \
-            --version "0.30.5" \
+            --version "0.30.6" \
             "${{ matrix.package }}"
 
       - name: Upload package

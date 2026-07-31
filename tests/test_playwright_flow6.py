@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright
 
-from src.errors import PageFlowError, QualificationPendingReview
+from src.errors import PageFlowError
 from src.industry_qualification import IndustryQualificationPage
-from src.models import Expiry, Qualification
+from src.models import Expiry, Qualification, QualificationType
 from src.qualification_form import QualificationForm
 from src.workflow import (
     WorkflowConfig,
@@ -27,7 +27,7 @@ def browser():
         instance.close()
 
 
-def test_pending_review_url_is_rejected_before_clicking_view(browser) -> None:
+def test_pending_review_url_opens_industry_qualification(browser) -> None:
     target_url = "https://qianhu.wejianzhan.com/2024-09-06heh2"
     page = browser.new_page()
     page.set_content(
@@ -48,21 +48,129 @@ def test_pending_review_url_is_rejected_before_clicking_view(browser) -> None:
           window.viewClicked = false;
           document.querySelector('#view').addEventListener(
             'click',
-            () => window.viewClicked = true
+            () => {{
+              window.viewClicked = true;
+              const heading = document.createElement('h2');
+              heading.textContent = '行业资质';
+              document.body.appendChild(heading);
+            }}
           );
         </script>
         """
     )
 
-    with pytest.raises(QualificationPendingReview) as captured:
-        select_url_and_open_industry_qualification(
-            page,
-            target_url,
-            timeout=2_000,
+    select_url_and_open_industry_qualification(
+        page,
+        target_url,
+        timeout=2_000,
+    )
+
+    assert page.evaluate("window.viewClicked") is True
+    assert page.get_by_text("行业资质", exact=True).count() == 1
+    page.close()
+
+
+def test_detail_preflight_rejects_filled_card_without_edit_or_delete(
+    browser,
+) -> None:
+    page = browser.new_page()
+    page.set_content(
+        """
+        <h2>行业资质</h2>
+        <div class="el-collapse-item">
+          <div class="el-collapse-item__header">经营业务1： 推广审查</div>
+          <div class="required-card" style="border: 1px dashed #ccc">
+            <div>资质状态 待审核</div>
+            <div>资质编号 旧编号</div>
+            <div>资质名称 旧名称</div>
+            <div>有效期至 2030-03-31</div>
+            <div>举证链接 无</div>
+          </div>
+          <div>上传备用资质文件</div>
+        </div>
+        """
+    )
+    industry = IndustryQualificationPage(page, timeout=2_000)
+    panel = industry.scan_businesses()[0]
+    qualification = Qualification(
+        index_name="资质1",
+        qualification_no="新编号",
+        qualification_name="新名称",
+        expiry=Expiry(permanent=False, date=date(2031, 1, 1)),
+        evidence_url=None,
+        files=(),
+    )
+    runner = object.__new__(WorkflowRunner)
+
+    with pytest.raises(PageFlowError, match="资质编辑入口无法唯一定位"):
+        runner._preflight_existing_qualification_cards(
+            industry,
+            ((QualificationType("推广审查", (qualification,)), panel),),
         )
 
-    assert captured.value.error_code == "qualification-pending-review"
-    assert page.evaluate("window.viewClicked") is False
+    assert industry.scan_cards(panel)[0].qualification_no == "旧编号"
+    page.close()
+
+
+def test_detail_preflight_rejects_disabled_edit_control(browser) -> None:
+    page = browser.new_page()
+    page.set_content(
+        """
+        <h2>行业资质</h2>
+        <div class="el-collapse-item">
+          <div class="el-collapse-item__header">经营业务1： 推广审查</div>
+          <div class="required-card" style="border: 1px dashed #ccc">
+            <div>资质状态 待审核</div>
+            <div>资质编号 旧编号</div>
+            <div>资质名称 旧名称</div>
+            <div>有效期至 2030-03-31</div>
+            <div>举证链接 无</div>
+            <span role="button" aria-disabled="true">
+              <i class="el-icon-edit">编辑</i>
+            </span>
+          </div>
+          <div>上传备用资质文件</div>
+        </div>
+        """
+    )
+    industry = IndustryQualificationPage(page, timeout=2_000)
+    panel = industry.scan_businesses()[0]
+    card = industry.scan_cards(panel)[0]
+
+    with pytest.raises(PageFlowError, match="资质编辑入口无法唯一定位"):
+        industry.validate_card_edit_target(panel, card)
+
+    assert industry.scan_cards(panel)[0].qualification_no == "旧编号"
+    page.close()
+
+
+def test_detail_preflight_rejects_disabled_delete_control(browser) -> None:
+    page = browser.new_page()
+    page.set_content(
+        """
+        <h2>行业资质</h2>
+        <div class="el-collapse-item">
+          <div class="el-collapse-item__header">经营业务1： 推广审查</div>
+          <div class="backup-card" style="border: 1px dashed #ccc">
+            <div>资质状态 待审核</div>
+            <div>资质编号 旧编号</div>
+            <div>资质名称 旧名称</div>
+            <div>有效期至 2030-03-31</div>
+            <div>举证链接 无</div>
+            <button disabled><i class="el-icon-delete">删除</i></button>
+          </div>
+          <div>上传备用资质文件</div>
+        </div>
+        """
+    )
+    industry = IndustryQualificationPage(page, timeout=2_000)
+    panel = industry.scan_businesses()[0]
+    card = industry.scan_cards(panel)[0]
+
+    with pytest.raises(PageFlowError, match="旧资质删除入口无法唯一定位"):
+        industry.validate_card_deletion_target(panel, card)
+
+    assert industry.scan_cards(panel)[0].qualification_no == "旧编号"
     page.close()
 
 

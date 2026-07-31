@@ -271,6 +271,37 @@ class IndustryQualificationPage:
             raise PageFlowError(f"经营业务定位失效：{panel.display_name}")
         return locator
 
+    @staticmethod
+    def _is_actionable_control(locator) -> bool:
+        try:
+            if not locator.is_visible() or not locator.is_enabled():
+                return False
+            return bool(
+                locator.evaluate(
+                    """
+                    element => {
+                      if (element.closest(
+                        '[disabled], [aria-disabled="true"], .is-disabled, .disabled'
+                      )) {
+                        return false;
+                      }
+                      for (
+                        let current = element;
+                        current instanceof Element;
+                        current = current.parentElement
+                      ) {
+                        if (getComputedStyle(current).pointerEvents === 'none') {
+                          return false;
+                        }
+                      }
+                      return true;
+                    }
+                    """
+                )
+            )
+        except Exception:
+            return False
+
     def find_business(self, display_name: str) -> BusinessPanelSnapshot:
         matches = [
             panel
@@ -386,7 +417,7 @@ class IndustryQualificationPage:
         visible = [
             delete_button.nth(index)
             for index in range(delete_button.count())
-            if delete_button.nth(index).is_visible()
+            if self._is_actionable_control(delete_button.nth(index))
         ]
         if len(visible) != 1:
             raise PageFlowError(f"旧资质删除入口无法唯一定位：{card.qualification_no}")
@@ -408,7 +439,7 @@ class IndustryQualificationPage:
         visible = [
             edit.nth(index)
             for index in range(edit.count())
-            if edit.nth(index).is_visible()
+            if self._is_actionable_control(edit.nth(index))
         ]
         # 系统空白卡允许点击卡片本身打开；已有资质必须有明确编辑入口。
         if card.qualification_no and len(visible) != 1:

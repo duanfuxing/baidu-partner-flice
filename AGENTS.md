@@ -165,7 +165,7 @@ GET https://partner.baidu.com/polaris-web/onecrm-oneFrontArchive/archive/cust/su
 - worker 使用独立进程、独立 Playwright、独立 Chrome 和独立浏览器上下文，只读取主进程保存的登录状态，不重复访问登录检测流程，也不得改写登录状态文件。
 - 默认禁止并发提交：存在待处理公司时只启动 1 个 worker，所有公司按调度顺序串行处理。
 - 统一状态文件为 `input/scheduler.json`，公司状态文件为 `input/<公司>/execution-status.json`。
-- URL 状态概览中目标行的“信息资质状态”为“待审核”时，不得进入详情或修改资质；公司标记为 `failed`，写入 `errorCode: qualification-pending-review` 后继续调度下一家公司。
+- URL 状态概览中的“信息资质状态”仅作展示，不作为是否可处理的判断依据；即使显示“待审核”也必须进入详情，以“行业资质”区域实际提供的编辑、删除和新增能力预检结果决定继续处理或报错。
 - 状态至少包含 `queued`、`running`、`success`、`failed`、`dry-run-success`；统一文件分别维护 `queuedCompanies` 和 `runningCompanies`。
 - 调度 JSON 必须通过 `fcntl` 文件锁和临时文件原子替换更新；存活进程已预留或执行的公司禁止被另一主程序重复领取。
 - 协调进程或 worker PID 已不存在时，其陈旧状态允许下一次运行回收。

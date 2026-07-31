@@ -15,7 +15,6 @@ from .browser import BrowserSession, is_truth_submit_url
 from .errors import (
     AuthenticationRequired,
     PageFlowError,
-    QualificationPendingReview,
 )
 from .industry_qualification import (
     BusinessPanelSnapshot,
@@ -237,20 +236,6 @@ def _click_view_in_row(page, row, timeout: int) -> None:
     raise PageFlowError(f"匹配的 URL 行中找不到唯一的“查看”按钮，可见按钮数：{len(visible_views)}")
 
 
-def _reject_pending_review_url(row, target_url: str) -> None:
-    """待审核 URL 无法删除或编辑已有资质，必须在进入详情前跳过。"""
-
-    pending = row.get_by_text("待审核", exact=True)
-    if any(
-        pending.nth(index).is_visible()
-        for index in range(pending.count())
-    ):
-        raise QualificationPendingReview(
-            "目标 URL 的信息资质状态为“待审核”，当前无法删除或修改资质，"
-            f"已跳过该公司：{target_url}"
-        )
-
-
 def _click_next_page(page, timeout: int) -> bool:
     selectors = [
         page.locator(".el-pagination .btn-next"),
@@ -294,7 +279,6 @@ def select_url_and_open_industry_qualification(
         if count > 1:
             raise PageFlowError(f"页面中匹配到多个相同 URL：{target_url}")
         if row is not None:
-            _reject_pending_review_url(row, target_url)
             _click_view_in_row(page, row, timeout)
             try:
                 _wait_for_exact_text(page, "行业资质", timeout)

@@ -109,35 +109,35 @@ def test_scheduler_tracks_queued_running_and_completed_company(tmp_path: Path) -
     assert company_status["status"] == "success"
 
 
-def test_scheduler_persists_pending_review_error_code(tmp_path: Path) -> None:
+def test_scheduler_persists_error_code(tmp_path: Path) -> None:
     company = _company(tmp_path, "公司A")
     scheduler = ExecutionScheduler(tmp_path)
     scheduler.reserve(
         (company,),
-        run_id="pending-review-run",
+        run_id="failed-run",
         coordinator_pid=os.getpid(),
     )
     scheduler.mark_running(
         company,
-        run_id="pending-review-run",
+        run_id="failed-run",
         worker_pid=os.getpid(),
     )
 
     scheduler.mark_completed(
         company,
-        run_id="pending-review-run",
+        run_id="failed-run",
         success=False,
-        error="信息资质状态为待审核",
-        error_code="qualification-pending-review",
+        error="用户取消任务",
+        error_code="task-cancelled",
     )
 
     status = json.loads(
         (company.source_path / "execution-status.json").read_text(encoding="utf-8")
     )
     assert status["status"] == "failed"
-    assert status["errorCode"] == "qualification-pending-review"
+    assert status["errorCode"] == "task-cancelled"
     assert scheduler.snapshot()["companies"]["公司A"]["errorCode"] == (
-        "qualification-pending-review"
+        "task-cancelled"
     )
 
 
