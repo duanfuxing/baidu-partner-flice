@@ -14,7 +14,11 @@ from .application import (
 )
 from .browser import BrowserConfig
 from .errors import FliceError, InputPersistenceError, InputValidationError
-from .run_logging import configure_logging, create_run_log
+from .run_logging import (
+    configure_logging,
+    create_run_log,
+    ensure_application_data_directories,
+)
 from .workflow import WorkflowConfig
 
 
@@ -24,8 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--auth-state",
         type=Path,
-        default=Path(".auth/storage_state.json"),
-        help="Playwright 登录状态文件",
+        default=None,
+        help="Playwright 登录状态文件；默认使用当前用户应用数据目录",
     )
     parser.add_argument("--screenshots", action="store_true", help="流程失败时保存页面截图")
     parser.add_argument(
@@ -44,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    data_directories = ensure_application_data_directories()
     log_file = create_run_log()
     configure_logging(log_file, level=args.log_level, console=True)
     logging.info("任务日志：%s", log_file)
@@ -54,8 +59,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     browser_config = BrowserConfig(
-        auth_state_path=args.auth_state.expanduser().resolve(),
-        screenshot_dir=Path("screenshots").resolve(),
+        auth_state_path=(
+            args.auth_state.expanduser().resolve()
+            if args.auth_state is not None
+            else data_directories["auth"] / "storage_state.json"
+        ),
+        screenshot_dir=data_directories["screenshots"] / log_file.stem,
     )
     workflow_config = WorkflowConfig(
         capture_screenshots=args.screenshots,

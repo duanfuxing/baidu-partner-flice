@@ -4,9 +4,11 @@ import logging
 from pathlib import Path
 
 from src.run_logging import (
+    APPLICATION_DATA_SUBDIRECTORIES,
     IncrementalLogReader,
     configure_logging,
     create_run_log,
+    ensure_application_data_directories,
     list_run_logs,
 )
 
@@ -23,6 +25,17 @@ def test_create_and_list_run_logs_newest_first(tmp_path: Path) -> None:
 
     assert set(logs) == {first, second}
     assert all(path.name.startswith("run-") for path in logs)
+
+
+def test_application_data_subdirectories_are_created(tmp_path: Path) -> None:
+    directories = ensure_application_data_directories(tmp_path)
+
+    assert set(directories) == set(APPLICATION_DATA_SUBDIRECTORIES)
+    assert all(path.is_dir() for path in directories.values())
+    assert directories["auth"] == tmp_path / "auth"
+    assert directories["logs"] == tmp_path / "logs"
+    assert directories["screenshots"] == tmp_path / "screenshots"
+    assert directories["cache"] == tmp_path / "cache"
 
 
 def test_configure_logging_writes_utf8_task_log(tmp_path: Path) -> None:

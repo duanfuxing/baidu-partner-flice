@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 APP_DIRECTORY_NAME = "BaiduPartnerFlice"
+APPLICATION_DATA_SUBDIRECTORIES = ("auth", "logs", "screenshots", "cache")
 LOG_FORMAT = "%(asctime)s %(levelname)s %(processName)s %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -30,6 +31,20 @@ def application_data_dir() -> Path:
         base = os.environ.get("XDG_STATE_HOME")
         root = Path(base) if base else Path.home() / ".local" / "state"
     return root / APP_DIRECTORY_NAME
+
+
+def ensure_application_data_directories(
+    root: Path | None = None,
+) -> dict[str, Path]:
+    """创建并返回登录状态、日志、截图和缓存目录。"""
+
+    data_root = root or application_data_dir()
+    directories = {
+        name: data_root / name for name in APPLICATION_DATA_SUBDIRECTORIES
+    }
+    for directory in directories.values():
+        directory.mkdir(parents=True, exist_ok=True)
+    return directories
 
 
 def create_run_log(log_directory: Path | None = None) -> Path:

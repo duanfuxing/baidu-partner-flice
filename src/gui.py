@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import queue
 import threading
 from pathlib import Path
@@ -18,15 +19,34 @@ from .browser import BrowserConfig
 from .errors import InputPersistenceError, InputValidationError, TaskCancelled
 from .run_logging import (
     IncrementalLogReader,
-    application_data_dir,
     configure_logging,
     create_run_log,
+    ensure_application_data_directories,
     list_run_logs,
 )
 from .resources import application_asset_path
 from .workflow import WorkflowConfig
 
 LOGGER = logging.getLogger(__name__)
+WINDOWS_UI_FONT_FAMILY = "Microsoft YaHei UI"
+WINDOWS_MONOSPACE_FONT_FAMILY = "Consolas"
+MACOS_MONOSPACE_FONT_FAMILY = "Menlo"
+
+
+def platform_monospace_font_family(system: str | None = None) -> str:
+    current_system = system or platform.system()
+    if current_system == "Windows":
+        return WINDOWS_MONOSPACE_FONT_FAMILY
+    if current_system == "Darwin":
+        return MACOS_MONOSPACE_FONT_FAMILY
+    return "monospace"
+
+
+def configure_platform_fonts(system: str | None = None) -> None:
+    """让 Windows 使用系统自带的中文 UI 字体。"""
+
+    if (system or platform.system()) == "Windows":
+        ctk.ThemeManager.theme["CTkFont"]["family"] = WINDOWS_UI_FONT_FAMILY
 
 
 class Palette:
@@ -71,6 +91,7 @@ class DesktopApplication:
         self.app_icon_image: Image.Image | None = None
         self.brand_icon: ctk.CTkImage | None = None
         self.window_icon: ImageTk.PhotoImage | None = None
+        self.data_directories = ensure_application_data_directories()
 
         self.input_path = ctk.StringVar()
         self.status = ctk.StringVar(value="等待选择输入目录")
@@ -615,7 +636,7 @@ class DesktopApplication:
             fg_color=Palette.LOG_BG,
             corner_radius=10,
             text_color=Palette.LOG_TEXT,
-            font=ctk.CTkFont(family="Menlo", size=11),
+            font=ctk.CTkFont(family=platform_monospace_font_family(), size=11),
             wrap="none",
         )
         self.current_log_text.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -676,7 +697,7 @@ class DesktopApplication:
             fg_color=Palette.LOG_BG,
             corner_radius=10,
             text_color=Palette.LOG_TEXT,
-            font=ctk.CTkFont(family="Menlo", size=11),
+            font=ctk.CTkFont(family=platform_monospace_font_family(), size=11),
             wrap="none",
         )
         self.history_text.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -883,10 +904,9 @@ class DesktopApplication:
             )
             report = validate_input_directory(selected)
             self.events.put(("run_validation_success", report))
-            data_dir = application_data_dir()
             browser_config = BrowserConfig(
-                auth_state_path=data_dir / "auth" / "storage_state.json",
-                screenshot_dir=data_dir / "screenshots" / self.current_log.stem,
+                auth_state_path=self.data_directories["auth"] / "storage_state.json",
+                screenshot_dir=self.data_directories["screenshots"] / self.current_log.stem,
             )
             result = run_validated_companies(
                 report,
@@ -1189,6 +1209,7 @@ class DesktopApplication:
 def main() -> int:
     ctk.set_appearance_mode("light")
     ctk.set_default_color_theme("blue")
+    configure_platform_fonts()
     root = ctk.CTk()
     DesktopApplication(root)
     root.mainloop()

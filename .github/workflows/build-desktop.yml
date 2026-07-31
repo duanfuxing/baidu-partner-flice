@@ -20,15 +20,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            artifact: BaiduPartnerFlice-0.30.3-Windows-x64
+          - os: windows-2022
+            artifact: BaiduPartnerFlice-0.30.4-Windows-x64-Setup
+            package: BaiduPartnerFlice-0.30.4-Windows-x64-Setup.exe
             platform: windows
+            python_architecture: x64
+            windows_arm64: 0
+          - os: windows-11-arm
+            artifact: BaiduPartnerFlice-0.30.4-Windows-arm64-Setup
+            package: BaiduPartnerFlice-0.30.4-Windows-arm64-Setup.exe
+            platform: windows
+            python_architecture: arm64
+            windows_arm64: 1
           - os: macos-15
-            artifact: BaiduPartnerFlice-0.30.3-macOS-arm64
+            artifact: BaiduPartnerFlice-0.30.4-macOS-arm64-Installer
+            package: BaiduPartnerFlice-0.30.4-macOS-arm64-Installer.pkg
             platform: macos
+            python_architecture: arm64
           - os: macos-15-intel
-            artifact: BaiduPartnerFlice-0.30.3-macOS-x64
+            artifact: BaiduPartnerFlice-0.30.4-macOS-x64-Installer
+            package: BaiduPartnerFlice-0.30.4-macOS-x64-Installer.pkg
             platform: macos
+            python_architecture: x64
 
     runs-on: ${{ matrix.os }}
 
@@ -40,6 +53,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11.8"
+          architecture: ${{ matrix.python_architecture }}
           cache: pip
 
       - name: Install dependencies
@@ -69,27 +83,46 @@ jobs:
         shell: bash
         run: dist/百度资质自动提交工具.app/Contents/MacOS/BaiduPartnerFlice --self-check
 
-      - name: Package Windows application
+      - name: Build Windows installer
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Compress-Archive `
-            -Path "dist/BaiduPartnerFlice" `
-            -DestinationPath "${{ matrix.artifact }}.zip"
+          $iscc = Get-ChildItem `
+            "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", `
+            "$env:ProgramFiles\Inno Setup *\ISCC.exe" `
+            -ErrorAction SilentlyContinue |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (-not $iscc) {
+            throw "Inno Setup compiler ISCC.exe was not found"
+          }
+          & $iscc.FullName `
+            "/DMyAppIsArm64=${{ matrix.windows_arm64 }}" `
+            "packaging\windows-installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+          Move-Item `
+            "installer-output\BaiduPartnerFlice-0.30.4-Windows-Setup.exe" `
+            "${{ matrix.package }}"
 
-      - name: Package macOS application
+      - name: Build macOS installer
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          ditto -c -k --sequesterRsrc --keepParent \
+          pkgbuild \
+            --component \
             "dist/百度资质自动提交工具.app" \
-            "${{ matrix.artifact }}.zip"
+            --install-location "/Applications" \
+            --identifier "com.baidu.partner.flice" \
+            --version "0.30.4" \
+            "${{ matrix.package }}"
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          path: ${{ matrix.package }}
           if-no-files-found: error
           retention-days: 30
 
@@ -112,7 +145,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" release/*.zip \
+          gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "百度资质自动提交工具 $GITHUB_REF_NAME" \
             --generate-notes
