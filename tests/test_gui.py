@@ -89,3 +89,22 @@ def test_application_palette_is_gray_white_and_light_blue() -> None:
     assert Palette.SURFACE == "#FFFFFF"
     assert Palette.SIDEBAR == "#FFFFFF"
     assert Palette.PRIMARY_SOFT == "#EAF4FF"
+
+
+def test_run_job_passes_browser_selection_to_scheduler(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import src.gui as module
+    app = object.__new__(DesktopApplication)
+    app.data_directories = {'auth': tmp_path, 'screenshots': tmp_path}
+    app.events = queue.Queue()
+    app.cancel_event = threading.Event()
+    monkeypatch.setattr(module, 'create_run_log', lambda: tmp_path/'run.log')
+    monkeypatch.setattr(module, 'configure_logging', lambda _: None)
+    monkeypatch.setattr(module, 'validate_input_directory', lambda _: object())
+    run = Mock(return_value={'successes': [], 'failures': []})
+    monkeypatch.setattr(module, 'run_validated_companies', run)
+    executable = tmp_path/'edge.exe'
+    app._run_job(tmp_path, False, 'msedge', executable)
+    config = run.call_args.kwargs['browser_config']
+    assert config.chrome_channel == 'msedge'
+    assert config.executable_path == executable

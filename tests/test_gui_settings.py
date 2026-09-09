@@ -77,3 +77,15 @@ def test_load_ignores_missing_or_non_directory_path(tmp_path: Path) -> None:
 def test_save_rejects_invalid_directory(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="输入目录不存在或不是目录"):
         save_last_input_directory(tmp_path / "cache", tmp_path / "missing")
+
+
+def test_browser_preferences_preserve_input_directory(tmp_path):
+    from src.gui_settings import load_browser_settings, save_browser_settings
+    cache = tmp_path / 'cache'
+    save_last_input_directory(cache, tmp_path)
+    save_browser_settings(cache, 'Microsoft Edge', '/custom/edge')
+    save_last_input_directory(cache, tmp_path)
+    assert load_browser_settings(cache) == ('Microsoft Edge', '/custom/edge')
+    assert load_last_input_directory(cache) == tmp_path
+    save_browser_settings(cache, 'Google Chrome', '')
+    assert load_browser_settings(cache) == ('Google Chrome', '')

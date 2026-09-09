@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import re
 import logging
+import os
+import plistlib
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +18,42 @@ from .errors import AuthenticationRequired, PageFlowError
 WORKBENCH_URL = "https://partner.baidu.com/portal/workbench"
 LOGGER = logging.getLogger(__name__)
 
+BROWSER_CHANNELS = {"Google Chrome": "chrome", "Microsoft Edge": "msedge", "其他 Chromium 浏览器": ""}
+
+
+def resolve_browser_path(value: str) -> Path | None:
+    if not value.strip():
+        return None
+    path = Path(value.strip()).expanduser().resolve()
+    if path.is_dir() and path.suffix.lower() == ".app":
+        try:
+            with (path / "Contents/Info.plist").open("rb") as stream:
+                executable = plistlib.load(stream)["CFBundleExecutable"]
+            if not isinstance(executable, str) or Path(executable).name != executable:
+                raise ValueError("无效的应用程序入口")
+            path = path / "Contents/MacOS" / executable
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ValueError("无法读取浏览器 .app，请选择有效的浏览器应用") from exc
+    if not path.is_file():
+        raise ValueError("浏览器程序不存在，请重新选择程序路径")
+    if sys.platform == "win32" and path.suffix.lower() != ".exe":
+        raise ValueError("请选择浏览器的 .exe 程序")
+    if sys.platform != "win32" and not os.access(path, os.X_OK):
+        raise ValueError("所选文件不可执行，请选择浏览器程序")
+    return path
+
+
+def _find_windows_chrome() -> Path | None:
+    if sys.platform != "win32":
+        return None
+    for variable in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        root = os.environ.get(variable)
+        if root:
+            candidate = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if candidate.is_file():
+                return candidate
+    return None
+
 
 @dataclass(frozen=True)
 class BrowserConfig:
@@ -23,6 +62,7 @@ class BrowserConfig:
     headless: bool = False
     timeout_ms: int = 30_000
     screenshot_dir: Path = Path("screenshots")
+    executable_path: Path | None = None
 
 
 def is_truth_submit_url(url: str) -> bool:
@@ -117,10 +157,32 @@ class BrowserSession:
 
         self._playwright = sync_playwright().start()
         try:
-            self.browser = self._playwright.chromium.launch(
-                channel=self.config.chrome_channel,
-                headless=self.config.headless,
-            )
+            launch_options = {"headless": self.config.headless}
+            if self.config.executable_path is not None:
+                launch_options["executable_path"] = str(resolve_browser_path(str(self.config.executable_path)))
+            else:
+                if not self.config.chrome_channel:
+                    raise PageFlowError("请为其他 Chromium 浏览器选择程序路径")
+                launch_options["channel"] = self.config.chrome_channel
+            try:
+                self.browser = self._playwright.chromium.launch(**launch_options)
+            except PlaywrightError as exc:
+                channel = self.config.chrome_channel
+                if self.config.executable_path is not None or channel not in {"chrome", "msedge"} or (
+                    f"Chromium distribution '{channel}' is not found" not in str(exc)
+                ):
+                    raise
+                executable = _find_windows_chrome() if channel == "chrome" else None
+                if executable is None:
+                    name = "Google Chrome" if channel == "chrome" else "Microsoft Edge"
+                    raise PageFlowError(
+                        f"未找到 {name} 浏览器。请先安装 {name} 正式版，"
+                        "或在任务中心选择已安装浏览器的程序路径。"
+                    ) from exc
+                self.browser = self._playwright.chromium.launch(
+                    executable_path=str(executable),
+                    headless=self.config.headless,
+                )
             context_kwargs = {
                 "viewport": {"width": 1440, "height": 1000},
                 "locale": "zh-CN",

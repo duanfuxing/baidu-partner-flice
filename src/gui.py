@@ -15,9 +15,10 @@ from PIL import Image, ImageTk
 
 from . import __version__
 from .application import ValidationReport, run_validated_companies, validate_input_directory
-from .browser import BrowserConfig
+from .browser import BROWSER_CHANNELS, BrowserConfig, resolve_browser_path
 from .errors import InputPersistenceError, InputValidationError, TaskCancelled
-from .gui_settings import load_last_input_directory, save_last_input_directory
+from .gui_settings import (load_last_input_directory, save_last_input_directory,
+                          load_browser_settings, save_browser_settings)
 from .run_logging import (
     IncrementalLogReader,
     configure_logging,
@@ -94,6 +95,9 @@ class DesktopApplication:
         self.window_icon: ImageTk.PhotoImage | None = None
         self.data_directories = ensure_application_data_directories()
         restored_input = load_last_input_directory(self.data_directories["cache"])
+        browser_kind, browser_path = load_browser_settings(self.data_directories["cache"])
+        self.browser_kind = ctk.StringVar(value=browser_kind)
+        self.browser_path = ctk.StringVar(value=browser_path)
 
         self.input_path = ctk.StringVar(
             value=str(restored_input) if restored_input is not None else ""
@@ -372,6 +376,32 @@ class DesktopApplication:
             command=self._choose_input_directory,
         )
         self.choose_button.grid(row=0, column=2, padx=(10, 0))
+
+        browser_row = ctk.CTkFrame(directory_card, fg_color="transparent")
+        browser_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 8))
+        browser_row.grid_columnconfigure(1, weight=1)
+        self.browser_menu = ctk.CTkOptionMenu(
+            browser_row, variable=self.browser_kind, values=list(BROWSER_CHANNELS),
+            command=self._change_browser_kind, width=170,
+        )
+        self.browser_menu.grid(row=0, column=0, padx=(0, 10))
+        self.browser_path_entry = ctk.CTkEntry(
+            browser_row, textvariable=self.browser_path, state="disabled",
+            placeholder_text="自动查找浏览器", height=32,
+        )
+        self.browser_path_entry.grid(row=0, column=1, sticky="ew")
+        self.browser_choose_button = ctk.CTkButton(
+            browser_row, text="选择程序", width=90, command=self._choose_browser_path,
+        )
+        self.browser_choose_button.grid(row=0, column=2, padx=(10, 0))
+        self.browser_reset_button = ctk.CTkButton(
+            browser_row, text="清除路径", width=80, command=self._clear_browser_path,
+        )
+        self.browser_reset_button.grid(row=0, column=3, padx=(10, 0))
+        ctk.CTkLabel(
+            directory_card, text="浏览器：Chrome / Edge 可自动查找；其他 Chromium 浏览器需选择程序。Windows 选 .exe，macOS 选 .app。",
+            font=ctk.CTkFont(size=11), text_color=Palette.MUTED,
+        ).grid(row=4, column=0, sticky="w", padx=20, pady=(0, 12))
 
         stats = ctk.CTkFrame(page, fg_color="transparent")
         stats.grid(row=1, column=0, sticky="ew", pady=14)
@@ -762,6 +792,32 @@ class DesktopApplication:
         for label in self.stat_values.values():
             label.configure(text="0")
 
+    def _save_browser_preferences(self) -> None:
+        try:
+            save_browser_settings(self.data_directories["cache"], self.browser_kind.get(), self.browser_path.get())
+        except OSError as exc:
+            messagebox.showwarning("设置未保存", f"本次选择仍可使用，但无法保存到下次启动：{exc}")
+
+    def _change_browser_kind(self, _value: str) -> None:
+        self.browser_path.set("")
+        self._save_browser_preferences()
+
+    def _clear_browser_path(self) -> None:
+        self.browser_path.set("")
+        self._save_browser_preferences()
+
+    def _choose_browser_path(self) -> None:
+        selected = filedialog.askopenfilename(title="选择浏览器程序（Windows .exe / macOS .app）")
+        if not selected:
+            return
+        try:
+            resolve_browser_path(selected)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("浏览器路径无效", str(exc))
+            return
+        self.browser_path.set(selected)
+        self._save_browser_preferences()
+
     def _choose_input_directory(self) -> None:
         dialog_options: dict[str, object] = {
             "title": "选择本次任务的输入目录",
@@ -883,6 +939,14 @@ class DesktopApplication:
             messagebox.showwarning("需要重新验证", "输入目录已经变化，请重新验证。")
             return
         final_submit = self.final_submit.get()
+        try:
+            executable = resolve_browser_path(self.browser_path.get())
+            channel = BROWSER_CHANNELS[self.browser_kind.get()]
+            if not channel and executable is None:
+                raise ValueError("请为其他 Chromium 浏览器选择程序路径")
+        except (OSError, ValueError, KeyError) as exc:
+            messagebox.showerror("浏览器设置无效", str(exc))
+            return
         final_step = (
             "所有资质完成后，将点击“全部提交”执行最终送审。"
             if final_submit
@@ -907,12 +971,12 @@ class DesktopApplication:
         selected = self.report.input_root
         threading.Thread(
             target=self._run_job,
-            args=(selected, final_submit),
+            args=(selected, final_submit, channel, executable),
             daemon=True,
             name="automation-run",
         ).start()
 
-    def _run_job(self, selected: Path, final_submit: bool) -> None:
+    def _run_job(self, selected: Path, final_submit: bool, channel: str = "chrome", executable: Path | None = None) -> None:
         self.current_log = create_run_log()
         configure_logging(self.current_log)
         try:
@@ -925,6 +989,8 @@ class DesktopApplication:
             report = validate_input_directory(selected)
             self.events.put(("run_validation_success", report))
             browser_config = BrowserConfig(
+                chrome_channel=channel,
+                executable_path=executable,
                 auth_state_path=self.data_directories["auth"] / "storage_state.json",
                 screenshot_dir=self.data_directories["screenshots"] / self.current_log.stem,
             )
@@ -1037,6 +1103,8 @@ class DesktopApplication:
     def _set_controls_busy(self, busy: bool) -> None:
         regular_state = "disabled" if busy else "normal"
         self.choose_button.configure(state=regular_state)
+        for widget in (self.browser_menu, self.browser_choose_button, self.browser_reset_button):
+            widget.configure(state=regular_state)
         self.validate_button.configure(
             state="disabled" if busy or not self.input_path.get() else "normal"
         )
