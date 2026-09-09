@@ -17,6 +17,7 @@ from . import __version__
 from .application import ValidationReport, run_validated_companies, validate_input_directory
 from .browser import BrowserConfig
 from .errors import InputPersistenceError, InputValidationError, TaskCancelled
+from .gui_settings import load_last_input_directory, save_last_input_directory
 from .run_logging import (
     IncrementalLogReader,
     configure_logging,
@@ -50,17 +51,17 @@ def configure_platform_fonts(system: str | None = None) -> None:
 
 
 class Palette:
-    APP_BG = "#F3F6FB"
+    APP_BG = "#F4F7FB"
     SURFACE = "#FFFFFF"
-    SURFACE_MUTED = "#F8FAFC"
-    SIDEBAR = "#111827"
-    SIDEBAR_HOVER = "#1F2937"
-    PRIMARY = "#2468F2"
-    PRIMARY_HOVER = "#1D55CE"
-    PRIMARY_SOFT = "#EAF1FF"
-    TEXT = "#111827"
+    SURFACE_MUTED = "#F7F9FC"
+    SIDEBAR = "#FFFFFF"
+    SIDEBAR_HOVER = "#EDF5FF"
+    PRIMARY = "#5B9CF6"
+    PRIMARY_HOVER = "#4288E8"
+    PRIMARY_SOFT = "#EAF4FF"
+    TEXT = "#243247"
     MUTED = "#64748B"
-    BORDER = "#E2E8F0"
+    BORDER = "#DEE7F1"
     SUCCESS = "#16A34A"
     SUCCESS_SOFT = "#ECFDF3"
     WARNING = "#D97706"
@@ -92,9 +93,14 @@ class DesktopApplication:
         self.brand_icon: ctk.CTkImage | None = None
         self.window_icon: ImageTk.PhotoImage | None = None
         self.data_directories = ensure_application_data_directories()
+        restored_input = load_last_input_directory(self.data_directories["cache"])
 
-        self.input_path = ctk.StringVar()
-        self.status = ctk.StringVar(value="等待选择输入目录")
+        self.input_path = ctk.StringVar(
+            value=str(restored_input) if restored_input is not None else ""
+        )
+        self.status = ctk.StringVar(
+            value="已恢复上次输入目录" if restored_input is not None else "等待选择输入目录"
+        )
         self.final_submit = ctk.BooleanVar(value=False)
 
         self.root.title(f"百度资质自动提交工具 {__version__}")
@@ -215,13 +221,13 @@ class DesktopApplication:
             brand,
             text="资质助手",
             font=ctk.CTkFont(size=18, weight="bold"),
-            text_color="#FFFFFF",
+            text_color=Palette.TEXT,
         ).grid(row=0, column=1, sticky="w", padx=(12, 0))
         ctk.CTkLabel(
             brand,
             text="自动提交工作台",
             font=ctk.CTkFont(size=11),
-            text_color="#94A3B8",
+            text_color=Palette.MUTED,
         ).grid(row=1, column=1, sticky="w", padx=(12, 0))
 
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
@@ -239,7 +245,7 @@ class DesktopApplication:
                 corner_radius=10,
                 fg_color="transparent",
                 hover_color=Palette.SIDEBAR_HOVER,
-                text_color="#CBD5E1",
+                text_color="#52657A",
                 font=ctk.CTkFont(size=13, weight="bold"),
                 command=lambda page=key: self._show_page(page),
             )
@@ -318,7 +324,7 @@ class DesktopApplication:
         ).grid(row=0, column=0, sticky="w", padx=20, pady=(17, 0))
         ctk.CTkLabel(
             directory_card,
-            text="请选择包含公司文件夹的根目录，每次任务都需要重新选择",
+            text="请选择包含公司文件夹的根目录；软件会记住上一次有效选择",
             font=ctk.CTkFont(size=11),
             text_color=Palette.MUTED,
         ).grid(row=1, column=0, sticky="w", padx=20, pady=(4, 13))
@@ -350,7 +356,7 @@ class DesktopApplication:
             border_color=Palette.BORDER,
             border_width=1,
             text_color=Palette.TEXT,
-            state="disabled",
+            state="normal" if self.input_path.get() else "disabled",
             command=self._validate_selected_directory,
         )
         self.validate_button.grid(row=0, column=1, padx=(10, 0))
@@ -461,7 +467,7 @@ class DesktopApplication:
         self.validation_title.grid(row=0, column=0, sticky="w")
         self.validation_meta = ctk.CTkLabel(
             result_header,
-            text="等待选择目录",
+            text="已恢复目录，点击重新验证" if self.input_path.get() else "等待选择目录",
             font=ctk.CTkFont(size=11),
             text_color=Palette.MUTED,
         )
@@ -719,9 +725,9 @@ class DesktopApplication:
         for key, button in self.nav_buttons.items():
             active = key == page
             button.configure(
-                fg_color=Palette.PRIMARY if active else "transparent",
-                hover_color=Palette.PRIMARY_HOVER if active else Palette.SIDEBAR_HOVER,
-                text_color="#FFFFFF" if active else "#CBD5E1",
+                fg_color=Palette.PRIMARY_SOFT if active else "transparent",
+                hover_color=Palette.SIDEBAR_HOVER,
+                text_color=Palette.PRIMARY if active else "#52657A",
             )
 
     def _set_status(self, text: str, tone: str = "info") -> None:
@@ -757,10 +763,24 @@ class DesktopApplication:
             label.configure(text="0")
 
     def _choose_input_directory(self) -> None:
-        selected = filedialog.askdirectory(title="选择本次任务的输入目录", mustexist=True)
+        dialog_options: dict[str, object] = {
+            "title": "选择本次任务的输入目录",
+            "mustexist": True,
+        }
+        current_path = self.input_path.get().strip()
+        if current_path and Path(current_path).expanduser().is_dir():
+            dialog_options["initialdir"] = current_path
+        selected = filedialog.askdirectory(**dialog_options)
         if not selected:
             return
-        self.input_path.set(selected)
+        try:
+            selected_path = save_last_input_directory(
+                self.data_directories["cache"], selected
+            )
+        except (OSError, ValueError) as exc:
+            LOGGER.warning("保存上次输入目录失败：%s", exc)
+            selected_path = Path(selected).expanduser().resolve()
+        self.input_path.set(str(selected_path))
         self.report = None
         self.start_button.configure(state="disabled")
         self.validate_button.configure(state="normal")
@@ -1173,10 +1193,11 @@ class DesktopApplication:
         self.running = False
         self.login_event = None
         self.report = None
-        self.input_path.set("")
         self._reset_stats()
         self.validation_title.configure(text="输入验证")
-        self.validation_meta.configure(text="等待重新选择目录")
+        self.validation_meta.configure(
+            text="当前目录需重新验证" if self.input_path.get() else "等待选择目录"
+        )
         self._show_validation_view("empty")
         self.login_button.configure(state="disabled")
         self.cancel_button.configure(state="disabled")

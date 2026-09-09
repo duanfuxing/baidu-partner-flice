@@ -2,18 +2,38 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 
 import customtkinter as ctk
 import pytest
 
 from src.errors import TaskCancelled
 from src.gui import (
+    Palette,
     WINDOWS_MONOSPACE_FONT_FAMILY,
     WINDOWS_UI_FONT_FAMILY,
     DesktopApplication,
     configure_platform_fonts,
     platform_monospace_font_family,
 )
+
+
+class _WidgetStub:
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+        self.options: dict[str, object] = {}
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: object) -> None:
+        self.value = str(value)
+
+    def configure(self, **kwargs: object) -> None:
+        self.options.update(kwargs)
+
+    def stop(self) -> None:
+        self.options["stopped"] = True
 
 
 def test_login_wait_can_be_cancelled_without_tk_window() -> None:
@@ -40,3 +60,32 @@ def test_windows_uses_microsoft_system_fonts() -> None:
         )
     finally:
         ctk.ThemeManager.theme["CTkFont"]["family"] = original_family
+
+
+def test_finish_running_keeps_cached_input_path(tmp_path: Path) -> None:
+    app = object.__new__(DesktopApplication)
+    app.running = True
+    app.login_event = threading.Event()
+    app.report = object()
+    app.input_path = _WidgetStub(str(tmp_path))
+    app.validation_title = _WidgetStub()
+    app.validation_meta = _WidgetStub()
+    app.login_button = _WidgetStub()
+    app.cancel_button = _WidgetStub()
+    app.run_progress = _WidgetStub()
+    app._reset_stats = lambda: None
+    app._show_validation_view = lambda view: None
+    app._set_controls_busy = lambda busy: None
+
+    app._finish_running()
+
+    assert app.input_path.get() == str(tmp_path)
+    assert app.report is None
+    assert app.validation_meta.options["text"] == "当前目录需重新验证"
+
+
+def test_application_palette_is_gray_white_and_light_blue() -> None:
+    assert Palette.APP_BG == "#F4F7FB"
+    assert Palette.SURFACE == "#FFFFFF"
+    assert Palette.SIDEBAR == "#FFFFFF"
+    assert Palette.PRIMARY_SOFT == "#EAF4FF"

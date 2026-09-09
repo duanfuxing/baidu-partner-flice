@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import date
@@ -270,7 +271,7 @@ def test_run_without_final_submit_can_be_scheduled_again(tmp_path: Path) -> None
     assert scheduler.snapshot()["companies"]["公司A"]["finalSubmit"] is True
 
 
-def test_final_result_prevents_reopening_locked_company_even_in_dry_run(
+def test_result_without_input_fingerprint_is_not_safe_to_skip(
     tmp_path: Path,
 ) -> None:
     company = _company(tmp_path, "公司A")
@@ -293,9 +294,9 @@ def test_final_result_prevents_reopening_locked_company_even_in_dry_run(
         dry_run=True,
     )
 
-    assert reserved == ()
+    assert reserved == (company,)
     assert busy == ()
-    assert completed[0]["companyName"] == "公司A"
+    assert completed == ()
 
 
 def test_changed_input_file_is_scheduled_again_after_previous_success(
@@ -321,3 +322,102 @@ def test_changed_input_file_is_scheduled_again_after_previous_success(
     assert reserved == (company,)
     assert busy == ()
     assert completed == ()
+
+
+def test_completed_new_audit_result_distinguishes_blank_field_directories(
+    tmp_path: Path,
+) -> None:
+    company = _company(tmp_path, "公司A")
+    qualifications = []
+    result_items = []
+    for index in (1, 2):
+        file_path = company.source_path / f"资质{index}.jpg"
+        content = f"file-{index}".encode()
+        file_path.write_bytes(content)
+        index_name = f"资质{index}"
+        qualifications.append(
+            Qualification(
+                index_name=index_name,
+                qualification_no="",
+                qualification_name="",
+                expiry=Expiry(permanent=False),
+                evidence_url=None,
+                files=(file_path,),
+            )
+        )
+        result_items.append(
+            {
+                "type_name": "推广审查",
+                "qualification_no": "",
+                "qualification_name": "",
+                "index_name": index_name,
+                "success": True,
+                "input_file_hashes": [hashlib.sha256(content).hexdigest()],
+            }
+        )
+    company = CompanyInput(
+        company_name=company.company_name,
+        url=company.url,
+        qualification_types=(
+            QualificationType("推广审查", tuple(qualifications)),
+        ),
+        source_path=company.source_path,
+    )
+    (company.source_path / "qualification-submit-result.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "final_submission_success": True,
+                "input_fingerprint": scheduler_module.company_input_fingerprint(company),
+                "qualifications": result_items,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert scheduler_module._completed_result_matches(company) is True
+
+
+def test_completed_new_audit_result_rejects_changed_evidence_url(
+    tmp_path: Path,
+) -> None:
+    company, _ = _company_with_file(tmp_path, "公司A")
+    fingerprint = scheduler_module.company_input_fingerprint(company)
+    qualification = company.qualification_types[0].qualifications[0]
+    file_hash = hashlib.sha256(qualification.files[0].read_bytes()).hexdigest()
+    (company.source_path / "qualification-submit-result.json").write_text(
+        json.dumps(
+            {
+                "success": True,
+                "final_submission_success": True,
+                "input_fingerprint": fingerprint,
+                "qualifications": [
+                    {
+                        "type_name": "推广审查",
+                        "qualification_no": qualification.qualification_no,
+                        "qualification_name": qualification.qualification_name,
+                        "index_name": qualification.index_name,
+                        "success": True,
+                        "input_file_hashes": [file_hash],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    changed = Qualification(
+        index_name=qualification.index_name,
+        qualification_no=qualification.qualification_no,
+        qualification_name=qualification.qualification_name,
+        expiry=qualification.expiry,
+        evidence_url="https://evidence.example/changed",
+        files=qualification.files,
+    )
+    changed_company = CompanyInput(
+        company_name=company.company_name,
+        url=company.url,
+        qualification_types=(QualificationType("推广审查", (changed,)),),
+        source_path=company.source_path,
+    )
+
+    assert scheduler_module._completed_result_matches(changed_company) is False

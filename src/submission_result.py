@@ -19,12 +19,14 @@ class QualificationActionResult:
     uploaded_file_ids: tuple[str, ...] = ()
     input_file_hashes: tuple[str, ...] = ()
     error: str | None = None
+    index_name: str = ""
 
 
 @dataclass
 class SubmissionResult:
     company_name: str
     url: str
+    input_fingerprint: str = ""
     started_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds"))
     completed_at: str | None = None
     deleted_businesses: list[str] = field(default_factory=list)

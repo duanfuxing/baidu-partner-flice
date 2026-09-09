@@ -2,7 +2,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.browser import BrowserSession, is_truth_submit_url
+from src.browser import (
+    BrowserSession,
+    is_new_audit_add_qualification_url,
+    is_new_audit_landing_url,
+    is_new_audit_qualification_detail_url,
+    is_qualification_submit_url,
+    is_truth_submit_url,
+)
 from src.errors import AuthenticationRequired
 
 
@@ -24,6 +31,42 @@ def test_truth_submit_url_rejects_initial_process_url() -> None:
 
 def test_truth_submit_url_rejects_wrong_host() -> None:
     assert not is_truth_submit_url("https://partner.baidu.com/flice#/truth/submit/1")
+
+
+def test_new_audit_landing_url_accepts_dynamic_lice_route() -> None:
+    assert is_new_audit_landing_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/10001/1/20002/token"
+    )
+
+
+def test_qualification_submit_url_accepts_new_popup_route() -> None:
+    assert is_qualification_submit_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/submit/10001/1/20002/token/0"
+    )
+
+
+def test_qualification_submit_url_rejects_new_landing_route() -> None:
+    assert not is_qualification_submit_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/10001/1/20002/token"
+    )
+
+
+def test_new_audit_qualification_detail_url_accepts_dynamic_route() -> None:
+    assert is_new_audit_qualification_detail_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/invest_lice_list/10001/1/token/0/30003"
+    )
+
+
+def test_new_audit_qualification_detail_url_rejects_submit_route() -> None:
+    assert not is_new_audit_qualification_detail_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/submit/10001/1/token/0"
+    )
+
+
+def test_new_audit_add_qualification_url_accepts_dynamic_route() -> None:
+    assert is_new_audit_add_qualification_url(
+        "https://fkzhunru.baidu.com/newaudit#/lice/add_invest_lice/10001/1/token"
+    )
 
 
 def test_manual_login_confirmation_must_pass_page_verification() -> None:

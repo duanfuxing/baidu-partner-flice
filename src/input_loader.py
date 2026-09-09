@@ -13,7 +13,6 @@ from .models import CompanyInput, Expiry, Qualification, QualificationType
 SUPPORTED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".pdf"})
 MAX_FILE_COUNT = 9
 MAX_FILE_SIZE = 10 * 1024 * 1024
-FORM_FIELDS = ("资质编号", "资质名称", "有效期至", "举证链接")
 FIELD_PATTERN = re.compile(r"^\s*(资质编号|资质名称|有效期至|举证链接)\s*[：:]\s*(.*?)\s*$")
 
 
@@ -49,16 +48,15 @@ def _parse_form_file(path: Path) -> dict[str, str]:
             continue
         values[field] = value.strip()
 
-    for field in FORM_FIELDS:
-        if field not in values:
-            errors.append(f"{path}: 缺少字段“{field}”")
-
     if errors:
         raise InputValidationError(errors)
     return values
 
 
-def _parse_expiry(value: str, path: Path) -> Expiry:
+def _parse_expiry(value: str | None, path: Path) -> Expiry:
+    if not value:
+        # 新版业务资质不使用有效期；旧版在识别页面版本后执行完整字段预检。
+        return Expiry(permanent=False)
     if value == "永久":
         return Expiry(permanent=True)
     try:
@@ -100,18 +98,14 @@ def _parse_qualification(directory: Path) -> Qualification:
     if not form_path.is_file():
         raise InputValidationError(f"{directory}: 缺少表单信息.txt")
     values = _parse_form_file(form_path)
-    qualification_no = values["资质编号"]
-    qualification_name = values["资质名称"]
-    if not qualification_no:
-        raise InputValidationError(f"{form_path}: 资质编号不能为空")
-    if not qualification_name:
-        raise InputValidationError(f"{form_path}: 资质名称不能为空")
-    evidence_url = clean_url(values["举证链接"]) or None
+    qualification_no = values.get("资质编号", "")
+    qualification_name = values.get("资质名称", "")
+    evidence_url = clean_url(values.get("举证链接", "")) or None
     return Qualification(
         index_name=directory.name,
         qualification_no=qualification_no,
         qualification_name=qualification_name,
-        expiry=_parse_expiry(values["有效期至"], form_path),
+        expiry=_parse_expiry(values.get("有效期至"), form_path),
         evidence_url=evidence_url,
         files=_collect_files(directory),
     )
@@ -161,9 +155,10 @@ def _parse_company(directory: Path) -> CompanyInput:
                     qualification.qualification_no,
                     qualification.qualification_name,
                 )
-                if key in seen_keys:
+                if all(key) and key in seen_keys:
                     duplicate_keys.add(key)
-                seen_keys.add(key)
+                if all(key):
+                    seen_keys.add(key)
             if duplicate_keys:
                 errors.append(
                     f"{type_directory}: 同一资质类型内“资质编号 + 资质名称”不能同时重复："

@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from .api_client import BaiduApiClient
-from .browser import BrowserSession, is_truth_submit_url
+from .browser import (
+    BrowserSession,
+    is_new_audit_landing_url,
+    is_new_audit_qualification_detail_url,
+    is_qualification_submit_url,
+)
 from .errors import (
     AuthenticationRequired,
     PageFlowError,
@@ -23,10 +28,16 @@ from .industry_qualification import (
     build_execution_plan,
 )
 from .models import CompanyInput, CompanyRunResult, Qualification, QualificationType
+from .new_audit_qualification import (
+    NewAuditQualificationPage,
+    is_permit_post_response,
+    validate_new_audit_input,
+)
 from .qualification_form import (
     QualificationForm,
     qualification_fields_and_file_count_match,
 )
+from .scheduler import company_input_fingerprint
 from .submission_result import (
     QualificationActionResult,
     SubmissionResult,
@@ -36,14 +47,15 @@ QUALIFICATION_NODE_XPATH = (
     '//*[@id="app"]/section/section/main/div/div[2]/div/div[2]/div[3]/div[2]/div[1]/div/div[1]/div[1]'
 )
 LOGGER = logging.getLogger(__name__)
+SUBMITALL_PATH = "/permit/web/permit/submitall"
 
 
 def submit_all_qualifications(page, timeout: int = 30_000) -> None:
-    """点击页面级提交按钮，并校验 submitall 接口成功。"""
+    """点击旧版或新版页面级提交按钮，并校验 submitall 接口成功。"""
 
     button = page.get_by_role(
         "button",
-        name=re.compile(r"^(本模块提交|全部提交)$"),
+        name=re.compile(r"^(本模块提交|全部提交|发起审核)$"),
     )
     visible_buttons = [
         button.nth(index)
@@ -52,12 +64,13 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
     ]
     if len(visible_buttons) != 1:
         raise PageFlowError(
-            f"找不到唯一可见的“本模块提交/全部提交”按钮，匹配数：{len(visible_buttons)}"
+            "找不到唯一可见的页面级提交按钮"
+            f"（本模块提交/全部提交/发起审核），匹配数：{len(visible_buttons)}"
         )
 
     try:
         with page.expect_response(
-            lambda response: "/permit/web/permit/submitall" in response.url,
+            lambda response: is_permit_post_response(response, SUBMITALL_PATH),
             timeout=timeout,
         ) as response_info:
             visible_buttons[0].click(timeout=timeout)
@@ -75,7 +88,10 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
                     "",
                     confirmation.inner_text(),
                 )
-                if re.search(r"是否.*提交|确认.*提交|确定.*提交", confirmation_text):
+                if re.search(
+                    r"是否.*提交|确认.*提交|确定.*提交|确认.*发起审核",
+                    confirmation_text,
+                ):
                     confirm = confirmation.get_by_role(
                         "button",
                         name=re.compile(r"确定|确认|提交"),
@@ -92,14 +108,16 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
     except PageFlowError:
         raise
     except Exception as exc:
-        raise PageFlowError("点击“本模块提交”后未收到 submitall 响应") from exc
+        raise PageFlowError("点击页面级提交并确认后未收到 submitall 响应") from exc
 
-    if not response.ok:
+    if response.status != 200:
         raise PageFlowError(f"全部提交接口 HTTP {response.status}")
     try:
         payload = response.json()
     except Exception as exc:
         raise PageFlowError("全部提交接口返回非 JSON") from exc
+    if not isinstance(payload, dict):
+        raise PageFlowError("全部提交接口响应结构异常")
     if payload.get("status") != 0:
         raise PageFlowError(
             f"全部提交失败：{payload.get('message') or payload.get('status')}"
@@ -130,12 +148,12 @@ def complete_final_submission(
         ]
         raise PageFlowError("存在资质提交失败：" + "、".join(failed_numbers))
     if not config.final_submit:
-        LOGGER.info("全部单项资质及最终集合已通过；根据任务选项跳过本模块提交")
+        LOGGER.info("全部单项资质及最终集合已通过；根据任务选项跳过页面级提交")
         return False
-    LOGGER.info("全部单项资质已通过，执行本模块提交")
+    LOGGER.info("全部单项资质已通过，执行页面级提交")
     submit_all_qualifications(page, timeout=config.page_timeout_ms)
     result.final_submission_success = True
-    LOGGER.info("本模块提交成功")
+    LOGGER.info("页面级提交成功")
     return True
 
 
@@ -156,36 +174,114 @@ def _click_qualification_node(page, timeout: int) -> None:
         raise PageFlowError("找不到“资质环节”节点") from exc
 
 
-def enter_qualification_page(page, qualification_url: str, timeout: int) -> str:
-    """打开流程页并点击资质环节，返回最终 URL。"""
+def _visible_exact_text(page, text: str) -> bool:
+    try:
+        locator = page.get_by_text(text, exact=True)
+        return any(
+            locator.nth(index).is_visible()
+            for index in range(locator.count())
+        )
+    except Exception:
+        # 页面可能正在进行 SPA 跳转，或新标签页仍处于初始化阶段。
+        return False
+
+
+def _click_new_audit_qualification_view(page, timeout: int) -> None:
+    """点击新版首页“资质信息审核”卡片内的唯一查看入口。"""
+
+    heading = page.get_by_text("资质信息审核", exact=True)
+    visible_headings = [
+        heading.nth(index)
+        for index in range(heading.count())
+        if heading.nth(index).is_visible()
+    ]
+    if len(visible_headings) != 1:
+        raise PageFlowError(
+            f"找不到唯一可见的“资质信息审核”模块，匹配数：{len(visible_headings)}"
+        )
+
+    card = visible_headings[0].locator(
+        "xpath=ancestor::*[.//*[normalize-space(.)='查看']][1]"
+    )
+    if not card.count():
+        raise PageFlowError("“资质信息审核”模块中找不到“查看”入口")
+
+    candidates = [
+        card.get_by_role("button", name="查看", exact=True),
+        card.get_by_role("link", name="查看", exact=True),
+        card.get_by_text("查看", exact=True),
+    ]
+    for candidate in candidates:
+        visible = [
+            candidate.nth(index)
+            for index in range(candidate.count())
+            if candidate.nth(index).is_visible()
+        ]
+        if len(visible) == 1:
+            visible[0].click(timeout=timeout)
+            return
+        if len(visible) > 1:
+            raise PageFlowError(
+                f"“资质信息审核”模块中存在多个可见“查看”入口，匹配数：{len(visible)}"
+            )
+    raise PageFlowError("“资质信息审核”模块中找不到可见的“查看”入口")
+
+
+def _wait_for_qualification_entry(page, timeout: int) -> str:
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        if _visible_exact_text(page, "URL状态概览"):
+            return "overview"
+        if _visible_exact_text(page, "资质信息审核"):
+            return "new-audit"
+        if _visible_exact_text(page, "资质环节"):
+            return "legacy"
+        page.wait_for_timeout(100)
+    raise PageFlowError("资质页面未出现“资质信息审核”、“资质环节”或“URL状态概览”")
+
+
+def _wait_for_overview_page(page, existing_pages: tuple, timeout: int):
+    """等待原页跳转或新标签页加载 URL 状态概览。"""
+
+    existing_ids = {id(item) for item in existing_pages}
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        candidates = [page]
+        candidates.extend(
+            item
+            for item in page.context.pages
+            if id(item) not in existing_ids and item is not page
+        )
+        for candidate in candidates:
+            if candidate.is_closed():
+                continue
+            if _visible_exact_text(candidate, "URL状态概览"):
+                if not is_qualification_submit_url(candidate.url):
+                    raise PageFlowError("“URL状态概览”所在页面 URL 不属于受支持的百度资质提交页面")
+                return candidate
+        page.wait_for_timeout(100)
+    raise PageFlowError("点击资质入口后未出现“URL状态概览”")
+
+
+def enter_qualification_page(page, qualification_url: str, timeout: int):
+    """打开资质入口并返回实际承载 URL 状态概览的页面及其 URL。"""
 
     page.goto(qualification_url, wait_until="domcontentloaded")
-    try:
-        _wait_for_exact_text(page, "资质环节", timeout)
-    except Exception:
-        # 某些页面节点文字在异步渲染后才出现，点击函数会给出最终错误。
-        pass
-    _click_qualification_node(page, timeout)
-    route_error = None
-    try:
-        page.wait_for_function(
-            """() => ['http:', 'https:'].includes(location.protocol) && location.hostname === 'fkzhunru.baidu.com' && location.pathname === '/flice' && location.hash.startsWith('#/truth/submit')""",
-            timeout=timeout,
-        )
-    except Exception as exc:
-        route_error = exc
-    if route_error is not None or not is_truth_submit_url(page.url):
-        try:
-            _wait_for_exact_text(page, "URL状态概览", timeout)
-        except Exception as exc:
-            cause = route_error or exc
-            raise PageFlowError(f"点击“资质环节”后未进入真实性资质页面，当前 URL：{page.url}") from cause
+    entry = _wait_for_qualification_entry(page, timeout)
+    if entry == "overview":
+        if not is_qualification_submit_url(page.url):
+            raise PageFlowError("“URL状态概览”所在页面 URL 不属于受支持的百度资质提交页面")
+        return page, page.url
+
+    existing_pages = tuple(page.context.pages)
+    if entry == "new-audit":
+        if not is_new_audit_landing_url(page.url):
+            raise PageFlowError("“资质信息审核”所在页面 URL 不属于新版百度资质管理中心")
+        _click_new_audit_qualification_view(page, timeout)
     else:
-        try:
-            _wait_for_exact_text(page, "URL状态概览", timeout)
-        except Exception as exc:
-            raise PageFlowError(f"真实性资质页面未出现“URL状态概览”，当前 URL：{page.url}") from exc
-    return page.url
+        _click_qualification_node(page, timeout)
+    overview_page = _wait_for_overview_page(page, existing_pages, timeout)
+    return overview_page, overview_page.url
 
 
 def _find_url_row(page, target_url: str):
@@ -256,13 +352,40 @@ def _click_next_page(page, timeout: int) -> bool:
     return False
 
 
+def _wait_for_qualification_detail_page(page, existing_pages: tuple, timeout: int):
+    """等待旧版原页详情或新版新标签页中的投放资质详情。"""
+
+    existing_ids = {id(item) for item in existing_pages}
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        candidates = [page]
+        candidates.extend(
+            item
+            for item in page.context.pages
+            if id(item) not in existing_ids and item is not page
+        )
+        for candidate in candidates:
+            if candidate.is_closed():
+                continue
+            if _visible_exact_text(candidate, "行业资质"):
+                return candidate
+            if _visible_exact_text(candidate, "投放资质"):
+                if not is_new_audit_qualification_detail_url(candidate.url):
+                    raise PageFlowError(
+                        "“投放资质”所在页面 URL 不属于新版 URL 投放资质详情页"
+                    )
+                return candidate
+        page.wait_for_timeout(100)
+    raise PageFlowError("点击 URL 行“查看”后未出现“行业资质”或“投放资质”区域")
+
+
 def select_url_and_open_industry_qualification(
     page,
     target_url: str,
     timeout: int,
     max_pages: int = 20,
-) -> None:
-    """匹配 URL 行，点击该行查看，并等待行业资质区域。"""
+):
+    """匹配 URL 行并返回旧版或新版实际承载投放资质详情的页面。"""
 
     _wait_for_exact_text(page, "URL状态概览", timeout)
     for page_number in range(1, max_pages + 1):
@@ -279,12 +402,9 @@ def select_url_and_open_industry_qualification(
         if count > 1:
             raise PageFlowError(f"页面中匹配到多个相同 URL：{target_url}")
         if row is not None:
+            existing_pages = tuple(page.context.pages)
             _click_view_in_row(page, row, timeout)
-            try:
-                _wait_for_exact_text(page, "行业资质", timeout)
-            except Exception as exc:
-                raise PageFlowError("点击“查看”后未出现“行业资质”区域") from exc
-            return
+            return _wait_for_qualification_detail_page(page, existing_pages, timeout)
         if page_number == max_pages or not _click_next_page(page, timeout):
             break
         try:
@@ -676,6 +796,9 @@ class WorkflowRunner:
         page,
         company: CompanyInput,
     ) -> tuple[bool, bool, str | None]:
+        if is_new_audit_qualification_detail_url(page.url):
+            return self._run_new_audit_qualification(page, company)
+        self._validate_legacy_qualification_fields(company)
         industry = IndustryQualificationPage(page, timeout=self.config.page_timeout_ms)
         panels = industry.scan_businesses()
         plan = build_execution_plan(company, panels)
@@ -706,7 +829,11 @@ class WorkflowRunner:
             LOGGER.info("dry-run 预检通过，不执行页面修改：%s", company.company_name)
             return False, False, None
 
-        result = SubmissionResult(company_name=company.company_name, url=company.url)
+        result = SubmissionResult(
+            company_name=company.company_name,
+            url=company.url,
+            input_fingerprint=company_input_fingerprint(company),
+        )
         result_path = None
         try:
             for qualification_type, panel in plan.existing_types:
@@ -757,6 +884,79 @@ class WorkflowRunner:
             result.finish()
             result_path = result.save(company.source_path)
 
+    @staticmethod
+    def _validate_legacy_qualification_fields(company: CompanyInput) -> None:
+        """旧版仍依赖完整表单字段；在任何页面修改前集中拒绝新版简化输入。"""
+
+        missing: list[str] = []
+        for qualification_type in company.qualification_types:
+            for qualification in qualification_type.qualifications:
+                prefix = f"{qualification_type.type_name}/{qualification.index_name}"
+                if not qualification.qualification_no:
+                    missing.append(f"{prefix}: 资质编号")
+                if not qualification.qualification_name:
+                    missing.append(f"{prefix}: 资质名称")
+                if not qualification.expiry.permanent and qualification.expiry.date is None:
+                    missing.append(f"{prefix}: 有效期至")
+        if missing:
+            raise PageFlowError(
+                "当前为旧版资质页面，以下字段仍为必填：" + "、".join(missing)
+            )
+
+    def _run_new_audit_qualification(
+        self,
+        page,
+        company: CompanyInput,
+    ) -> tuple[bool, bool, str | None]:
+        """执行新版业务资质填写，并按运行选项完成页面级最终送审。"""
+
+        validate_new_audit_input(company)
+        if self.config.dry_run:
+            LOGGER.info("新版业务资质 dry-run 输入预检通过，不修改页面：%s", company.company_name)
+            return False, False, None
+
+        result = SubmissionResult(
+            company_name=company.company_name,
+            url=company.url,
+            input_fingerprint=company_input_fingerprint(company),
+        )
+        result_path = None
+        try:
+            NewAuditQualificationPage(
+                page,
+                timeout=self.config.page_timeout_ms,
+            ).fill_all(company)
+            for qualification_type in company.qualification_types:
+                for qualification in qualification_type.qualifications:
+                    result.qualifications.append(
+                        QualificationActionResult(
+                            type_name=qualification_type.type_name,
+                            qualification_no=qualification.qualification_no,
+                            qualification_name=qualification.qualification_name,
+                            action="new-audit-upload",
+                            success=True,
+                            file_count=len(qualification.files),
+                            input_file_hashes=self._input_file_hashes(qualification),
+                            index_name=qualification.index_name,
+                        )
+                    )
+            final_submission_completed = complete_final_submission(
+                page,
+                result,
+                self.config,
+            )
+            return (
+                True,
+                final_submission_completed,
+                str(company.source_path / "qualification-submit-result.json"),
+            )
+        except Exception as exc:
+            result.error = str(exc)
+            raise
+        finally:
+            result.finish()
+            result_path = result.save(company.source_path)
+
     def run_company(self, company: CompanyInput, workbench_page=None) -> CompanyRunResult:
         LOGGER.info("查询公司并获取资质流程链接")
         cust_id = self.api.search_company(company.company_name)
@@ -767,12 +967,12 @@ class WorkflowRunner:
             page = self.session.new_page()
         try:
             LOGGER.info("已获取资质流程链接，开始进入资质页面")
-            final_url = enter_qualification_page(
+            page, final_url = enter_qualification_page(
                 page,
                 qualification_url,
                 self.config.page_timeout_ms,
             )
-            select_url_and_open_industry_qualification(
+            page = select_url_and_open_industry_qualification(
                 page,
                 company.url,
                 self.config.page_timeout_ms,

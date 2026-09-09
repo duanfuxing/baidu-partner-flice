@@ -63,6 +63,24 @@ def test_load_input_parses_permanent_expiry_and_evidence_url(tmp_path: Path) -> 
     assert qualification.evidence_url == "https://evidence.example/"
 
 
+def test_load_input_allows_new_audit_file_and_evidence_only(tmp_path: Path) -> None:
+    company = tmp_path / "示例公司"
+    company.mkdir()
+    (company / "url.txt").write_text("https://example.com", encoding="utf-8")
+    _write_qualification(
+        company,
+        form="举证链接：https://evidence.example/new-audit\n",
+    )
+
+    qualification = load_input(tmp_path)[0].qualification_types[0].qualifications[0]
+
+    assert qualification.qualification_no == ""
+    assert qualification.qualification_name == ""
+    assert qualification.expiry.permanent is False
+    assert qualification.expiry.date is None
+    assert qualification.evidence_url == "https://evidence.example/new-audit"
+
+
 def test_load_input_ignores_unsupported_files(tmp_path: Path) -> None:
     company = tmp_path / "示例公司"
     company.mkdir()

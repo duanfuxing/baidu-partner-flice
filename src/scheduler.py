@@ -58,22 +58,33 @@ def _completed_result_matches(company: CompanyInput) -> bool:
         return False
     if not payload.get("success") or not payload.get("final_submission_success"):
         return False
+    stored_fingerprint = payload.get("input_fingerprint")
+    if not isinstance(stored_fingerprint, str) or not stored_fingerprint:
+        return False
+    if stored_fingerprint != company_input_fingerprint(company):
+        return False
+
+    def result_key(item: dict) -> tuple[str, str, str, str]:
+        number = str(item.get("qualification_no") or "")
+        name = str(item.get("qualification_name") or "")
+        index_name = str(item.get("index_name") or "") if not (number and name) else ""
+        return (str(item.get("type_name") or ""), number, name, index_name)
+
     history = {
-        (
-            item.get("type_name"),
-            item.get("qualification_no"),
-            item.get("qualification_name"),
-        ): tuple(item.get("input_file_hashes") or ())
+        result_key(item): tuple(item.get("input_file_hashes") or ())
         for item in payload.get("qualifications") or ()
         if item.get("success")
     }
-    expected_keys: set[tuple[str, str, str]] = set()
+    expected_keys: set[tuple[str, str, str, str]] = set()
     for qualification_type in company.qualification_types:
         for qualification in qualification_type.qualifications:
+            number = qualification.qualification_no
+            name = qualification.qualification_name
             key = (
                 qualification_type.type_name,
-                qualification.qualification_no,
-                qualification.qualification_name,
+                number,
+                name,
+                qualification.index_name if not (number and name) else "",
             )
             expected_keys.add(key)
             hashes: list[str] = []

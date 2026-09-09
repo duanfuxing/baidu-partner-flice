@@ -38,12 +38,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="只扫描并验证流程 6 执行计划，不删除、添加、上传或提交",
     )
     parser.add_argument(
+        "--no-final-submit",
+        action="store_true",
+        help="执行资质填写和自动保存，但不点击页面最终提交按钮",
+    )
+    parser.add_argument(
         "--no-wait",
         action="store_true",
         help="兼容参数；worker 完成或失败后都会自动关闭 Chrome",
     )
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     return parser
+
+
+def workflow_config_from_args(args: argparse.Namespace) -> WorkflowConfig:
+    """将 CLI 安全选项集中转换为工作流配置。"""
+
+    return WorkflowConfig(
+        capture_screenshots=args.screenshots,
+        dry_run=args.dry_run,
+        final_submit=not args.no_final_submit,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,10 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         screenshot_dir=data_directories["screenshots"] / log_file.stem,
     )
-    workflow_config = WorkflowConfig(
-        capture_screenshots=args.screenshots,
-        dry_run=args.dry_run,
-    )
+    workflow_config = workflow_config_from_args(args)
     try:
         result = run_validated_companies(
             report,

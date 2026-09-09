@@ -40,6 +40,69 @@ def is_truth_submit_url(url: str) -> bool:
     )
 
 
+def is_new_audit_landing_url(url: str) -> bool:
+    """判断是否为新版资质统一管理中心首页。"""
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname == "fkzhunru.baidu.com"
+        and parsed.path.rstrip("/") == "/newaudit"
+        and parsed.fragment.startswith("/lice/")
+        and not parsed.fragment.startswith("/lice/submit/")
+    )
+
+
+def is_qualification_submit_url(url: str) -> bool:
+    """判断是否进入旧版或新版资质提交概览页面。"""
+
+    if is_truth_submit_url(url):
+        return True
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname == "fkzhunru.baidu.com"
+        and parsed.path.rstrip("/") == "/newaudit"
+        and parsed.fragment.startswith("/lice/submit/")
+    )
+
+
+def is_new_audit_qualification_detail_url(url: str) -> bool:
+    """判断是否为新版 URL 投放资质详情页面。"""
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname == "fkzhunru.baidu.com"
+        and parsed.path.rstrip("/") == "/newaudit"
+        and parsed.fragment.startswith("/lice/invest_lice_list/")
+    )
+
+
+def is_new_audit_add_qualification_url(url: str) -> bool:
+    """判断是否为新版新增投放资质页面。"""
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname == "fkzhunru.baidu.com"
+        and parsed.path.rstrip("/") == "/newaudit"
+        and parsed.fragment.startswith("/lice/add_invest_lice/")
+    )
+
+
 class BrowserSession:
     """管理 Playwright、Chrome 和登录状态。"""
 
