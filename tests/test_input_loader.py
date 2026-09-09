@@ -14,7 +14,8 @@ def _write_qualification(root: Path, name: str = "资质1", form: str | None = N
     directory.mkdir(parents=True)
     (directory / "表单信息.txt").write_text(
         form
-        or "资质编号：编号1\n资质名称：资质名称1\n有效期至：2026-11-12\n举证链接：\n",
+        if form is not None
+        else "资质编号：编号1\n资质名称：资质名称1\n有效期至：2026-11-12\n举证链接：\n",
         encoding="utf-8",
     )
     (directory / "1.jpg").write_bytes(b"image")
@@ -79,6 +80,77 @@ def test_load_input_allows_new_audit_file_and_evidence_only(tmp_path: Path) -> N
     assert qualification.expiry.permanent is False
     assert qualification.expiry.date is None
     assert qualification.evidence_url == "https://evidence.example/new-audit"
+
+
+@pytest.mark.parametrize(
+    ("form", "expected"),
+    [
+        ("https://evidence.example/proof", "https://evidence.example/proof"),
+        ("https://evidence.example:8443/proof?a=1&b=2", "https://evidence.example:8443/proof?a=1&b=2"),
+        ("\ufeff https:/evidence.example/\n\tproof \n", "https://evidence.example/proof"),
+        ("", None),
+        (" \n\t ", None),
+        ("\ufeff", None),
+        ("举证链接：", None),
+    ],
+)
+def test_load_input_parses_plain_evidence_and_saves_json(
+    tmp_path: Path, form: str, expected: str | None,
+) -> None:
+    company = tmp_path / "示例公司"
+    company.mkdir()
+    (company / "url.txt").write_text("https://example.com", encoding="utf-8")
+    for name in ("资质1", "资质2"):
+        _write_qualification(company, name=name, form=form)
+
+    companies = load_input(tmp_path)
+    qualifications = companies[0].qualification_types[0].qualifications
+    assert len(qualifications) == 2
+    for qualification in qualifications:
+        assert qualification.evidence_url == expected
+        assert qualification.qualification_no == ""
+        assert qualification.qualification_name == ""
+        assert qualification.expiry.date is None
+        assert qualification.expiry.permanent is False
+
+    save_input_json(companies)
+    payload = json.loads((company / "input.json").read_text(encoding="utf-8"))
+    assert all(
+        item["evidenceUrl"] == expected
+        for item in payload["qualificationTypes"][0]["qualifications"]
+    )
+
+
+def test_load_input_allows_missing_form_file(tmp_path: Path) -> None:
+    company = tmp_path / "示例公司"
+    company.mkdir()
+    (company / "url.txt").write_text("https://example.com", encoding="utf-8")
+    directory = _write_qualification(company, form="")
+    (directory / "表单信息.txt").unlink()
+
+    companies = load_input(tmp_path)
+    qualification = companies[0].qualification_types[0].qualifications[0]
+    assert qualification.evidence_url is None
+    assert qualification.qualification_no == ""
+    assert qualification.qualification_name == ""
+    assert qualification.expiry.date is None
+    save_input_json(companies)
+    payload = json.loads((company / "input.json").read_text(encoding="utf-8"))
+    assert payload["qualificationTypes"][0]["qualifications"][0]["evidenceUrl"] is None
+
+    (directory / "1.jpg").unlink()
+    with pytest.raises(InputValidationError, match="没有找到 jpg/jpeg/png/pdf 资质文件"):
+        load_input(tmp_path)
+
+
+def test_load_input_rejects_duplicate_evidence_labels(tmp_path: Path) -> None:
+    company = tmp_path / "示例公司"
+    company.mkdir()
+    (company / "url.txt").write_text("https://example.com", encoding="utf-8")
+    _write_qualification(company, form="举证链接：https://example.com\n举证链接：")
+
+    with pytest.raises(InputValidationError, match="字段“举证链接”重复"):
+        load_input(tmp_path)
 
 
 def test_load_input_ignores_unsupported_files(tmp_path: Path) -> None:

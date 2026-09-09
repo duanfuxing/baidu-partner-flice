@@ -33,6 +33,11 @@ def _parse_form_file(path: Path) -> dict[str, str]:
     except UnicodeDecodeError as exc:
         raise InputValidationError(f"{path}: 必须使用 UTF-8 编码") from exc
 
+    # 新格式只保存举证链接值；不能按冒号分割，否则会误判 URL 协议和端口。
+    # 保留旧标签格式的严格解析，避免混合格式悄悄丢失字段。
+    if not any(FIELD_PATTERN.match(line) for line in lines):
+        return {"举证链接": "\n".join(lines)}
+
     values: dict[str, str] = {}
     errors: list[str] = []
     for line_number, line in enumerate(lines, start=1):
@@ -95,9 +100,7 @@ def _collect_files(directory: Path) -> tuple[Path, ...]:
 
 def _parse_qualification(directory: Path) -> Qualification:
     form_path = directory / "表单信息.txt"
-    if not form_path.is_file():
-        raise InputValidationError(f"{directory}: 缺少表单信息.txt")
-    values = _parse_form_file(form_path)
+    values = _parse_form_file(form_path) if form_path.is_file() else {}
     qualification_no = values.get("资质编号", "")
     qualification_name = values.get("资质名称", "")
     evidence_url = clean_url(values.get("举证链接", "")) or None
