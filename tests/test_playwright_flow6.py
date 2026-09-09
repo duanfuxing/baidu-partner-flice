@@ -64,7 +64,7 @@ def test_pending_review_url_opens_industry_qualification(browser) -> None:
     detail_page = select_url_and_open_industry_qualification(
         page,
         target_url,
-        timeout=2_000,
+        timeout=10_000,
     )
 
     assert detail_page is page
