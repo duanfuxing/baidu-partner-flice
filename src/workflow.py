@@ -68,18 +68,31 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
             f"（本模块提交/全部提交/发起审核），匹配数：{len(visible_buttons)}"
         )
 
+    LOGGER.info("最终送审：点击页面级提交按钮，等待确认弹窗或 submitall 响应")
+    response_received = False
+
+    def matches_submission(response):
+        nonlocal response_received
+        if is_permit_post_response(response, SUBMITALL_PATH):
+            response_received = True
+            return True
+        return False
+
     try:
         with page.expect_response(
-            lambda response: is_permit_post_response(response, SUBMITALL_PATH),
+            matches_submission,
             timeout=timeout,
         ) as response_info:
             visible_buttons[0].click(timeout=timeout)
             confirmation = page.locator(".el-message-box:visible").last
             try:
-                confirmation.wait_for(
-                    state="visible",
-                    timeout=min(timeout, 3_000),
-                )
+                deadline = time.monotonic() + timeout / 1000
+                while not confirmation.is_visible() and not response_received:
+                    if time.monotonic() >= deadline:
+                        break
+                    page.wait_for_timeout(100)
+                if not confirmation.is_visible():
+                    confirmation = None
             except Exception:
                 confirmation = None
             if confirmation is not None:
@@ -103,6 +116,7 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
                     ]
                     if not visible_confirm:
                         raise PageFlowError("最终提交确认弹窗中找不到确认按钮")
+                    LOGGER.info("最终送审：点击确认弹窗的确定按钮")
                     visible_confirm[-1].click(timeout=timeout)
         response = response_info.value
     except PageFlowError:
@@ -122,6 +136,8 @@ def submit_all_qualifications(page, timeout: int = 30_000) -> None:
         raise PageFlowError(
             f"全部提交失败：{payload.get('message') or payload.get('status')}"
         )
+
+    LOGGER.info("最终送审：submitall 成功")
 
 
 @dataclass(frozen=True)
@@ -394,7 +410,7 @@ def select_url_and_open_industry_qualification(
         try:
             page.get_by_text(target_url, exact=True).first.wait_for(
                 state="visible",
-                timeout=min(timeout, 10_000),
+                timeout=timeout,
             )
         except Exception:
             pass
@@ -427,7 +443,7 @@ class WorkflowRunner:
         self.config = config or WorkflowConfig()
         if session.context is None:
             raise PageFlowError("WorkflowRunner 需要已启动的浏览器上下文")
-        self.api = BaiduApiClient(session.context.request)
+        self.api = BaiduApiClient(session.context.request, timeout_ms=self.config.page_timeout_ms)
 
     @staticmethod
     def _page_card_for_qualification(
@@ -566,6 +582,7 @@ class WorkflowRunner:
         existing_card: QualificationCardSnapshot | None,
         empty_card: QualificationCardSnapshot | None,
     ) -> tuple[str, tuple[str, ...]]:
+        LOGGER.info("业务[%s] 资质[%s]：%s资质表单", panel.display_name, qualification.index_name, "打开编辑" if existing_card is not None else "打开新增")
         editing = existing_card is not None
         if editing:
             dialog = industry.open_card_editor(panel, existing_card)
@@ -579,10 +596,14 @@ class WorkflowRunner:
             timeout=self.config.page_timeout_ms,
         )
         if editing:
+            LOGGER.info("业务[%s] 资质[%s]：清理旧文件", panel.display_name, qualification.index_name)
             form.clear_existing_files(existing_card.file_count)
         uploaded_file_ids = form.upload_files(qualification)
+        LOGGER.info("业务[%s] 资质[%s]：覆盖输入字段并核对 OCR 回填", panel.display_name, qualification.index_name)
         form.fill_from_input(qualification)
+        LOGGER.info("业务[%s] 资质[%s]：提交单项资质并等待保存", panel.display_name, qualification.index_name)
         form.submit(qualification)
+        LOGGER.info("业务[%s] 资质[%s]：单项提交成功", panel.display_name, qualification.index_name)
         return action, uploaded_file_ids
 
     def _wait_for_submitted_qualification(
@@ -959,7 +980,9 @@ class WorkflowRunner:
 
     def run_company(self, company: CompanyInput, workbench_page=None) -> CompanyRunResult:
         LOGGER.info("查询公司并获取资质流程链接")
+        LOGGER.info("步骤 1：按公司名称查询唯一客户")
         cust_id = self.api.search_company(company.company_name)
+        LOGGER.info("步骤 2：获取资质流程链接")
         qualification_url = self.api.get_qualification_url(cust_id)
         if workbench_page is not None and not workbench_page.is_closed():
             page = workbench_page
@@ -972,12 +995,14 @@ class WorkflowRunner:
                 qualification_url,
                 self.config.page_timeout_ms,
             )
+            LOGGER.info("资质概览已打开：按输入 URL 匹配记录并进入详情")
             page = select_url_and_open_industry_qualification(
                 page,
                 company.url,
                 self.config.page_timeout_ms,
                 self.config.max_pages,
             )
+            LOGGER.info("资质详情已打开：开始业务和资质处理")
             (
                 qualification_submission_completed,
                 final_submission_completed,

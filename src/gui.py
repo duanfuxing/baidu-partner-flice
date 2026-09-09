@@ -18,13 +18,15 @@ from .application import ValidationReport, run_validated_companies, validate_inp
 from .browser import BROWSER_CHANNELS, BrowserConfig, resolve_browser_path
 from .errors import InputPersistenceError, InputValidationError, TaskCancelled
 from .gui_settings import (load_last_input_directory, save_last_input_directory,
-                          load_browser_settings, save_browser_settings)
+                          load_browser_settings, save_browser_settings,
+                          load_timeout_seconds, parse_timeout_seconds, save_timeout_seconds)
 from .run_logging import (
     IncrementalLogReader,
     configure_logging,
     create_run_log,
     ensure_application_data_directories,
     list_run_logs,
+    delete_run_log,
 )
 from .resources import application_asset_path
 from .workflow import WorkflowConfig
@@ -90,6 +92,7 @@ class DesktopApplication:
         self.closed = False
         self.current_page = "task"
         self.history_paths: list[Path] = []
+        self.selected_history_path: Path | None = None
         self.app_icon_image: Image.Image | None = None
         self.brand_icon: ctk.CTkImage | None = None
         self.window_icon: ImageTk.PhotoImage | None = None
@@ -98,6 +101,7 @@ class DesktopApplication:
         browser_kind, browser_path = load_browser_settings(self.data_directories["cache"])
         self.browser_kind = ctk.StringVar(value=browser_kind)
         self.browser_path = ctk.StringVar(value=browser_path)
+        self.timeout_seconds = ctk.StringVar(value=str(load_timeout_seconds(self.data_directories["cache"])))
 
         self.input_path = ctk.StringVar(
             value=str(restored_input) if restored_input is not None else ""
@@ -193,6 +197,7 @@ class DesktopApplication:
         self._build_task_page()
         self._build_run_page()
         self._build_history_page()
+        self._build_settings_page()
 
     def _build_sidebar(self) -> None:
         sidebar = ctk.CTkFrame(
@@ -239,6 +244,7 @@ class DesktopApplication:
             ("task", "任务中心", "01"),
             ("run", "本次运行", "02"),
             ("history", "历史日志", "03"),
+            ("settings", "设置", "04"),
         )
         for row, (key, text, number) in enumerate(nav_items, start=1):
             button = ctk.CTkButton(
@@ -313,9 +319,14 @@ class DesktopApplication:
         )
 
     def _build_task_page(self) -> None:
-        page = self._new_page("task")
+        host = self._new_page("task")
+        host.grid_columnconfigure(0, weight=1)
+        host.grid_rowconfigure(0, weight=1)
+        self.task_scroll = ctk.CTkScrollableFrame(host, fg_color="transparent", corner_radius=0)
+        self.task_scroll.grid(row=0, column=0, sticky="nsew")
+        page = self.task_scroll
         page.grid_columnconfigure(0, weight=1)
-        page.grid_rowconfigure(3, weight=1)
+        page.grid_rowconfigure(3, weight=1, minsize=250)
 
         directory_card = self._card(page)
         directory_card.grid(row=0, column=0, sticky="ew")
@@ -377,31 +388,6 @@ class DesktopApplication:
         )
         self.choose_button.grid(row=0, column=2, padx=(10, 0))
 
-        browser_row = ctk.CTkFrame(directory_card, fg_color="transparent")
-        browser_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 8))
-        browser_row.grid_columnconfigure(1, weight=1)
-        self.browser_menu = ctk.CTkOptionMenu(
-            browser_row, variable=self.browser_kind, values=list(BROWSER_CHANNELS),
-            command=self._change_browser_kind, width=170,
-        )
-        self.browser_menu.grid(row=0, column=0, padx=(0, 10))
-        self.browser_path_entry = ctk.CTkEntry(
-            browser_row, textvariable=self.browser_path, state="disabled",
-            placeholder_text="自动查找浏览器", height=32,
-        )
-        self.browser_path_entry.grid(row=0, column=1, sticky="ew")
-        self.browser_choose_button = ctk.CTkButton(
-            browser_row, text="选择程序", width=90, command=self._choose_browser_path,
-        )
-        self.browser_choose_button.grid(row=0, column=2, padx=(10, 0))
-        self.browser_reset_button = ctk.CTkButton(
-            browser_row, text="清除路径", width=80, command=self._clear_browser_path,
-        )
-        self.browser_reset_button.grid(row=0, column=3, padx=(10, 0))
-        ctk.CTkLabel(
-            directory_card, text="浏览器：Chrome / Edge 可自动查找；其他 Chromium 浏览器需选择程序。Windows 选 .exe，macOS 选 .app。",
-            font=ctk.CTkFont(size=11), text_color=Palette.MUTED,
-        ).grid(row=4, column=0, sticky="w", padx=20, pady=(0, 12))
 
         stats = ctk.CTkFrame(page, fg_color="transparent")
         stats.grid(row=1, column=0, sticky="ew", pady=14)
@@ -519,24 +505,23 @@ class DesktopApplication:
             fg_color="transparent",
         )
         self.empty_state.grid(row=0, column=0, sticky="nsew")
-        ctk.CTkLabel(
-            self.empty_state,
-            text="◎",
-            font=ctk.CTkFont(size=30, weight="bold"),
-            text_color="#94A3B8",
-        ).place(relx=0.5, rely=0.38, anchor="center")
-        ctk.CTkLabel(
-            self.empty_state,
-            text="选择输入目录后，这里会展示完整验证结果",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#475569",
-        ).place(relx=0.5, rely=0.52, anchor="center")
-        ctk.CTkLabel(
-            self.empty_state,
-            text="验证通过前不会打开浏览器，也不会执行提交",
-            font=ctk.CTkFont(size=11),
-            text_color=Palette.MUTED,
-        ).place(relx=0.5, rely=0.61, anchor="center")
+        self.empty_content = ctk.CTkFrame(self.empty_state, fg_color="transparent")
+        self.empty_content.place(relx=0.5, rely=0.5, anchor="center")
+        self.empty_icon = ctk.CTkLabel(
+            self.empty_content, text="◎",
+            font=ctk.CTkFont(size=30, weight="bold"), text_color="#94A3B8",
+        )
+        self.empty_icon.pack(pady=(0, 8))
+        self.empty_title = ctk.CTkLabel(
+            self.empty_content, text="选择输入目录后，这里会展示完整验证结果",
+            font=ctk.CTkFont(size=13, weight="bold"), text_color="#475569",
+        )
+        self.empty_title.pack(pady=(0, 6))
+        self.empty_description = ctk.CTkLabel(
+            self.empty_content, text="验证通过前不会打开浏览器，也不会执行提交",
+            font=ctk.CTkFont(size=11), text_color=Palette.MUTED,
+        )
+        self.empty_description.pack()
 
         self.tree_container = ctk.CTkFrame(
             self.validation_body,
@@ -586,6 +571,59 @@ class DesktopApplication:
         )
         self.validation_errors.grid(row=0, column=0, sticky="nsew")
         self._show_validation_view("empty")
+
+    def _build_settings_page(self) -> None:
+        page = self._new_page("settings")
+        page.grid_columnconfigure(0, weight=1)
+        browser_card = self._card(page)
+        browser_card.grid(row=0, column=0, sticky="ew")
+        browser_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(browser_card, text="浏览器", font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=Palette.TEXT).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 12))
+        self.browser_menu = ctk.CTkOptionMenu(
+            browser_card, variable=self.browser_kind, values=list(BROWSER_CHANNELS),
+            command=self._change_browser_kind, width=190,
+            fg_color=Palette.PRIMARY, button_color=Palette.PRIMARY,
+            button_hover_color=Palette.PRIMARY_HOVER,
+        )
+        self.browser_menu.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 14))
+        path_row = ctk.CTkFrame(browser_card, fg_color="transparent")
+        path_row.grid(row=2, column=0, sticky="ew", padx=20)
+        path_row.grid_columnconfigure(0, weight=1)
+        self.browser_path_entry = ctk.CTkEntry(
+            path_row, textvariable=self.browser_path, state="disabled", height=38,
+            placeholder_text="留空时自动查找浏览器", border_color=Palette.BORDER,
+        )
+        self.browser_path_entry.grid(row=0, column=0, sticky="ew")
+        self.browser_choose_button = ctk.CTkButton(
+            path_row, text="选择程序", width=90, height=38, command=self._choose_browser_path,
+            fg_color=Palette.PRIMARY, hover_color=Palette.PRIMARY_HOVER,
+        )
+        self.browser_choose_button.grid(row=0, column=1, padx=(10, 0))
+        self.browser_reset_button = ctk.CTkButton(
+            path_row, text="清除路径", width=80, height=38, command=self._clear_browser_path,
+            fg_color=Palette.SURFACE_MUTED, text_color=Palette.TEXT,
+            hover_color=Palette.PRIMARY_SOFT, border_width=1, border_color=Palette.BORDER,
+        )
+        self.browser_reset_button.grid(row=0, column=2, padx=(10, 0))
+        ctk.CTkLabel(
+            browser_card, text="Chrome / Edge 可自动查找；其他 Chromium 浏览器需选择程序。\nWindows 选择 .exe，macOS 选择 .app。", justify="left",
+            font=ctk.CTkFont(size=11), text_color=Palette.MUTED,
+        ).grid(row=3, column=0, sticky="w", padx=20, pady=(12, 18))
+        timeout_card = self._card(page)
+        timeout_card.grid(row=1, column=0, sticky="ew", pady=(16, 0))
+        ctk.CTkLabel(timeout_card, text="操作超时", font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=Palette.TEXT).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 12))
+        timeout_row = ctk.CTkFrame(timeout_card, fg_color="transparent")
+        timeout_row.grid(row=1, column=0, sticky="w", padx=20)
+        self.timeout_entry = ctk.CTkEntry(timeout_row, textvariable=self.timeout_seconds, width=100,
+                                         height=38, border_color=Palette.BORDER)
+        self.timeout_entry.pack(side="left", padx=(0, 10))
+        self.timeout_entry.bind("<FocusOut>", self._save_timeout_preference)
+        self.timeout_entry.bind("<Return>", self._save_timeout_preference)
+        ctk.CTkLabel(timeout_row, text="秒", text_color=Palette.TEXT).pack(side="left")
+        ctk.CTkLabel(timeout_card, text="可填 5–600 秒，每步独立计时；网络慢时可调到 60 或 120 秒。\n修改后离开输入框或按回车保存，下次任务生效。", justify="left",
+                     font=ctk.CTkFont(size=11), text_color=Palette.MUTED).grid(row=2, column=0, sticky="w", padx=20, pady=(12, 18))
 
     def _build_run_page(self) -> None:
         page = self._new_page("run")
@@ -716,6 +754,12 @@ class DesktopApplication:
             corner_radius=0,
         )
         self.history_list_frame.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        self.delete_history_button = ctk.CTkButton(
+            list_card, text="删除选中日志", height=34,
+            fg_color=Palette.DANGER_SOFT, text_color=Palette.DANGER,
+            hover_color="#FEE2E2", state="disabled", command=self._delete_history_log,
+        )
+        self.delete_history_button.pack(fill="x", padx=14, pady=(0, 14))
 
         detail_card = self._card(page)
         detail_card.grid(row=0, column=1, sticky="nsew")
@@ -748,6 +792,7 @@ class DesktopApplication:
             "task": ("任务中心", "选择输入目录，确认验证结果后开始自动提交"),
             "run": ("本次运行", "查看任务阶段、登录提示和实时运行日志"),
             "history": ("历史日志", "回看每次任务的完整执行记录"),
+            "settings": ("设置", "配置浏览器和操作超时，设置会自动保存"),
         }
         title, subtitle = page_copy[page]
         self.page_title.configure(text=title)
@@ -791,6 +836,15 @@ class DesktopApplication:
     def _reset_stats(self) -> None:
         for label in self.stat_values.values():
             label.configure(text="0")
+
+    def _save_timeout_preference(self, _event=None) -> None:
+        try:
+            save_timeout_seconds(self.data_directories["cache"], self.timeout_seconds.get())
+        except ValueError:
+            # 编辑期间允许临时空值；开始运行前统一提示并阻止非法值。
+            return
+        except OSError as exc:
+            LOGGER.warning("保存超时设置失败：%s", exc)
 
     def _save_browser_preferences(self) -> None:
         try:
@@ -940,11 +994,19 @@ class DesktopApplication:
             return
         final_submit = self.final_submit.get()
         try:
+            timeout_ms = parse_timeout_seconds(self.timeout_seconds.get()) * 1000
+        except ValueError as exc:
+            self._show_page("settings")
+            messagebox.showerror("超时设置无效", str(exc))
+            return
+        self._save_timeout_preference()
+        try:
             executable = resolve_browser_path(self.browser_path.get())
             channel = BROWSER_CHANNELS[self.browser_kind.get()]
             if not channel and executable is None:
                 raise ValueError("请为其他 Chromium 浏览器选择程序路径")
         except (OSError, ValueError, KeyError) as exc:
+            self._show_page("settings")
             messagebox.showerror("浏览器设置无效", str(exc))
             return
         final_step = (
@@ -971,17 +1033,18 @@ class DesktopApplication:
         selected = self.report.input_root
         threading.Thread(
             target=self._run_job,
-            args=(selected, final_submit, channel, executable),
+            args=(selected, final_submit, channel, executable, timeout_ms),
             daemon=True,
             name="automation-run",
         ).start()
 
-    def _run_job(self, selected: Path, final_submit: bool, channel: str = "chrome", executable: Path | None = None) -> None:
+    def _run_job(self, selected: Path, final_submit: bool, channel: str = "chrome", executable: Path | None = None, timeout_ms: int = 30_000) -> None:
         self.current_log = create_run_log()
         configure_logging(self.current_log)
         try:
             LOGGER.info("桌面任务开始，版本 %s", __version__)
             LOGGER.info("输入目录：%s", selected)
+            LOGGER.info("每步操作超时：%s 秒", timeout_ms / 1000)
             LOGGER.info(
                 "最终提交：%s",
                 "执行全部提交" if final_submit else "跳过全部提交",
@@ -991,6 +1054,7 @@ class DesktopApplication:
             browser_config = BrowserConfig(
                 chrome_channel=channel,
                 executable_path=executable,
+                timeout_ms=timeout_ms,
                 auth_state_path=self.data_directories["auth"] / "storage_state.json",
                 screenshot_dir=self.data_directories["screenshots"] / self.current_log.stem,
             )
@@ -998,6 +1062,7 @@ class DesktopApplication:
                 report,
                 browser_config=browser_config,
                 workflow_config=WorkflowConfig(
+                    page_timeout_ms=timeout_ms,
                     capture_screenshots=False,
                     dry_run=False,
                     final_submit=final_submit,
@@ -1066,6 +1131,11 @@ class DesktopApplication:
 
     def _refresh_log_history(self) -> None:
         self.history_paths = list(list_run_logs())
+        if self.selected_history_path not in self.history_paths:
+            self.selected_history_path = None
+            self.history_title.configure(text="日志详情")
+            self._set_text(self.history_text, "选择左侧历史任务查看完整日志。\n")
+        self.delete_history_button.configure(state="normal" if self.selected_history_path else "disabled")
         for widget in self.history_list_frame.winfo_children():
             widget.destroy()
         if not self.history_paths:
@@ -1093,6 +1163,8 @@ class DesktopApplication:
             ).pack(fill="x", pady=2)
 
     def _show_history_path(self, path: Path) -> None:
+        self.selected_history_path = path
+        self.delete_history_button.configure(state="normal")
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -1100,10 +1172,28 @@ class DesktopApplication:
         self.history_title.configure(text=path.name)
         self._set_text(self.history_text, content)
 
+    def _delete_history_log(self) -> None:
+        path = self.selected_history_path
+        if path is None:
+            return
+        if self.running and self.current_log is not None and path.resolve() == self.current_log.resolve():
+            messagebox.showwarning("日志正在使用", "当前任务正在使用此日志，请在任务结束后删除。")
+            return
+        if not messagebox.askyesno("删除日志", f"确定永久删除日志 {path.name}？"):
+            return
+        try:
+            delete_run_log(path, log_directory=self.data_directories["logs"],
+                           active_log=self.current_log if self.running else None)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("删除失败", str(exc))
+            return
+        self.selected_history_path = None
+        self._refresh_log_history()
+
     def _set_controls_busy(self, busy: bool) -> None:
         regular_state = "disabled" if busy else "normal"
         self.choose_button.configure(state=regular_state)
-        for widget in (self.browser_menu, self.browser_choose_button, self.browser_reset_button):
+        for widget in (self.browser_menu, self.browser_choose_button, self.browser_reset_button, self.timeout_entry):
             widget.configure(state=regular_state)
         self.validate_button.configure(
             state="disabled" if busy or not self.input_path.get() else "normal"

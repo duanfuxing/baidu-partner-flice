@@ -33,15 +33,16 @@ class RetryConfig:
 class BaiduApiClient:
     """使用 Playwright 浏览器上下文中的请求客户端调用百度接口。"""
 
-    def __init__(self, request: ApiRequestContext, retry: RetryConfig | None = None) -> None:
+    def __init__(self, request: ApiRequestContext, retry: RetryConfig | None = None, *, timeout_ms: int = 30_000) -> None:
         self.request = request
         self.retry = retry or RetryConfig()
+        self.timeout_ms = timeout_ms
 
     def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(1, self.retry.attempts + 1):
             try:
-                response = getattr(self.request, method)(url, **kwargs)
+                response = getattr(self.request, method)(url, timeout=self.timeout_ms, **kwargs)
                 if response.status in (401, 403):
                     raise AuthenticationRequired(f"接口返回未授权状态：HTTP {response.status}")
                 if response.status >= 500:

@@ -91,3 +91,17 @@ def test_api_client_retries_server_error() -> None:
 
     assert client.search_company("示例公司") == "1"
     assert request.calls == 2
+
+
+def test_custom_request_timeout_applies_to_each_retry():
+    class TimedRequest:
+        def __init__(self):
+            self.timeouts = []
+        def post(self, url, **kwargs):
+            self.timeouts.append(kwargs['timeout'])
+            raise TimeoutError('slow')
+    from src.errors import ApiError
+    request = TimedRequest()
+    with pytest.raises(ApiError):
+        BaiduApiClient(request, RetryConfig(backoff_seconds=0), timeout_ms=120_000).search_company('示例')
+    assert request.timeouts == [120_000] * 3

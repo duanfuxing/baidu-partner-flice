@@ -89,3 +89,27 @@ def test_browser_preferences_preserve_input_directory(tmp_path):
     assert load_last_input_directory(cache) == tmp_path
     save_browser_settings(cache, 'Google Chrome', '')
     assert load_browser_settings(cache) == ('Google Chrome', '')
+
+
+@pytest.mark.parametrize('value', ['5', '30', '120', '600', ' 60 '])
+def test_timeout_setting_roundtrip(tmp_path, value):
+    from src.gui_settings import save_timeout_seconds, load_timeout_seconds, save_browser_settings, load_browser_settings
+    save_browser_settings(tmp_path, 'Microsoft Edge', '')
+    save_timeout_seconds(tmp_path, value)
+    save_last_input_directory(tmp_path, tmp_path)
+    assert load_timeout_seconds(tmp_path) == int(value)
+    assert load_browser_settings(tmp_path) == ('Microsoft Edge', '')
+
+
+@pytest.mark.parametrize('value', ['', '0', '-1', '4', '601', '1.5', 'abc', '²'])
+def test_invalid_timeout_rejected(tmp_path, value):
+    from src.gui_settings import save_timeout_seconds, load_timeout_seconds
+    with pytest.raises(ValueError, match='5–600'):
+        save_timeout_seconds(tmp_path, value)
+    assert load_timeout_seconds(tmp_path) == 30
+
+
+def test_corrupt_timeout_cache_falls_back(tmp_path):
+    from src.gui_settings import load_timeout_seconds
+    (tmp_path / SETTINGS_FILENAME).write_text('{"timeoutSeconds": null}', encoding='utf-8')
+    assert load_timeout_seconds(tmp_path) == 30

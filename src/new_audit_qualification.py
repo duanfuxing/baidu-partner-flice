@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .errors import PageFlowError
+from .upload_retry import upload_with_retry
+
+LOGGER = logging.getLogger(__name__)
 from .models import CompanyInput, Qualification, QualificationType
 from .type_mapping import mapping_for_input, page_name_matches
 
@@ -16,7 +20,6 @@ from .type_mapping import mapping_for_input, page_name_matches
 PERMIT_HOST = "fkzhunru.baidu.com"
 SUBMITLICE_PATH = "/permit/web/permit/submitlice"
 SAVELICEPIC_PATH = "/permit/web/permit/savelicepic"
-CARD_SAVE_TIMEOUT_MS = 20_000
 
 
 def is_permit_post_response(response, expected_path: str) -> bool:
@@ -185,7 +188,7 @@ class NewAuditQualificationPage:
         add = self._wait_for_unique_visible(
             self.page.get_by_role("button", name="新增资质", exact=True),
             "“新增资质”按钮",
-            timeout=self.timeout * 2,
+            timeout=self.timeout,
         )
         add.click(timeout=self.timeout)
         self._wait_until(
@@ -211,7 +214,7 @@ class NewAuditQualificationPage:
             self._wait_until(
                 lambda: bool(self._visible(business_tabs)),
                 "等待已备案业务资质标签加载超时",
-                timeout=min(self.timeout, 10_000),
+                timeout=self.timeout,
             )
         except PageFlowError:
             return False
@@ -258,7 +261,7 @@ class NewAuditQualificationPage:
             self._wait_until(
                 list_settled,
                 "等待已备案业务资质列表加载超时",
-                timeout=min(self.timeout, 15_000),
+                timeout=self.timeout,
             )
         except PageFlowError:
             return False
@@ -303,6 +306,7 @@ class NewAuditQualificationPage:
         return result
 
     def _click_business_tab(self, index: int) -> None:
+        LOGGER.info("业务[%s]：切换并等待业务表单", index)
         tabs = self._business_tabs()
         if index not in tabs:
             raise PageFlowError(f"找不到业务{index}标签")
@@ -395,6 +399,7 @@ class NewAuditQualificationPage:
         return matches[0]
 
     def _close_business_tab(self, index: int) -> None:
+        LOGGER.info("默认业务[%s]：删除业务并核对剩余数量", index)
         tab = self._business_tabs().get(index)
         if tab is None:
             raise PageFlowError(f"删除前找不到业务{index}")
@@ -687,6 +692,7 @@ class NewAuditQualificationPage:
 
     def _ensure_upload_form_count_in(self, container_getter, expected: int) -> None:
         while len(self._file_inputs_in(container_getter())) < expected:
+            LOGGER.info("资质卡片：新增补充表单，目标数量 %s", expected)
             container = container_getter()
             inputs = self._file_inputs_in(container)
             before = len(inputs)
@@ -973,6 +979,7 @@ class NewAuditQualificationPage:
             )
         self._discard_empty_initial_supplements(container_getter)
         for index, qualification in enumerate(qualifications):
+            LOGGER.info("业务[%s] 资质[%s]：准备第 %s 张卡片，共 %s 个文件", qualification_type.type_name, qualification.index_name, index + 1, len(qualification.files))
             # 一个资质目录对应一张卡片，目录内最多9个文件一次上传；
             # 只有下一个资质目录才创建补充资质卡片。
             try:
@@ -989,62 +996,47 @@ class NewAuditQualificationPage:
                     f"至少需要 {index + 1}，实际 {len(inputs)}"
                 )
             paths = tuple(path.resolve() for path in qualification.files)
-            upload_responses: list[object] = []
+            def current_card():
+                return self._upload_container(self._file_inputs_in(container_getter())[index])
 
-            def record_upload(response) -> None:
-                if is_permit_post_response(response, SAVELICEPIC_PATH):
-                    upload_responses.append(response)
+            def uploaded_count():
+                card = current_card()
+                preview = card.locator(".preview-container")
+                if not preview.count():
+                    return None
+                counts = [int(match.group(1))
+                          for item in self._visible(preview.locator(".file-count"))
+                          if (match := re.fullmatch(r"\s*(\d+)\s*/\s*\d+\s*", item.inner_text()))]
+                if len(counts) == 1:
+                    return counts[0]
+                if not counts and not preview.locator("img, a[href], .el-upload-list__item").count():
+                    return 0
+                return None
 
-            self.page.on("response", record_upload)
-            try:
-                if inputs[index].get_attribute("multiple") is not None:
-                    # 本地兼容夹具可一次选择多文件。
-                    inputs[index].set_input_files([str(path) for path in paths])
-                    self._wait_until(
-                        lambda: len(upload_responses) >= len(paths),
-                        f"等待资质“{qualification.index_name}”文件上传接口超时",
-                    )
-                    for path, upload_response in zip(
-                        paths,
-                        upload_responses[:len(paths)],
-                        strict=True,
-                    ):
-                        self._submitlice_response(
-                            upload_response,
-                            f"upload:{path.name}",
-                        )
-                    current_inputs = self._file_inputs_in(container_getter())
-                    card = self._upload_container(current_inputs[index])
-                    self._wait_for_uploaded_file_state(
-                        card, len(paths), qualification.index_name
-                    )
-                else:
-                    # 百度真实控件没有 multiple；numberLimit=9 表示同一卡片可
-                    # 逐次追加，而不是原生 input 可一次选择多文件。
-                    for uploaded_count, path in enumerate(paths, start=1):
-                        current_inputs = self._file_inputs_in(container_getter())
-                        current_input = current_inputs[index]
-                        current_input.set_input_files(str(path))
-                        self._wait_until(
-                            lambda: len(upload_responses) >= uploaded_count,
-                            f"等待资质“{qualification.index_name}”第{uploaded_count}个文件上传接口超时",
-                        )
-                        self._submitlice_response(
-                            upload_responses[uploaded_count - 1],
-                            f"upload:{path.name}",
-                        )
-                        card = self._upload_container(
-                            self._file_inputs_in(container_getter())[index]
-                        )
-                        self._wait_for_uploaded_file_state(
-                            card, uploaded_count, qualification.index_name
-                        )
-            finally:
-                self.page.remove_listener("response", record_upload)
+            multiple = inputs[index].get_attribute("multiple") is not None
+            batches = [paths] if multiple else [(path,) for path in paths]
+            uploaded_total = 0
+            for batch in batches:
+                description = f"业务[{qualification_type.type_name}] 资质[{qualification.index_name}] 文件[{', '.join(path.name for path in batch)}]"
+
+                def trigger():
+                    current_input = self._file_inputs_in(container_getter())[index]
+                    # 清空原生选择值使相同文件可再次触发 change，不删除已上传预览。
+                    current_input.evaluate("element => { element.value = ''; }")
+                    current_input.set_input_files([str(path) for path in batch])
+
+                upload_with_retry(
+                    self.page, trigger, uploaded_count,
+                    lambda response: self._submitlice_response(response, "文件上传"),
+                    description=description, timeout_ms=self.timeout, file_count=len(batch),
+                )
+                uploaded_total += len(batch)
+                self._wait_for_uploaded_file_state(current_card(), uploaded_total, qualification.index_name)
 
             current_inputs = self._file_inputs_in(container_getter())
             card = self._upload_container(current_inputs[index])
             evidence = qualification.evidence_url or ""
+            LOGGER.info("业务[%s] 资质[%s]：%s举证链接", qualification_type.type_name, qualification.index_name, "填写" if evidence else "清空/不填写")
             evidence_input = self._unique_visible(
                 card.locator('input:not([type="file"])'),
                 f"第{index + 1}个资质卡片的举证链接输入框",
@@ -1053,10 +1045,11 @@ class NewAuditQualificationPage:
                 evidence_input.click(timeout=self.timeout)
                 evidence_input.fill(evidence)
             self.page.wait_for_timeout(300)
+            LOGGER.info("业务[%s] 资质[%s]：触发自动保存并等待 submitlice", qualification_type.type_name, qualification.index_name)
             try:
                 with self.page.expect_response(
                     lambda response: is_permit_post_response(response, SUBMITLICE_PATH),
-                    timeout=CARD_SAVE_TIMEOUT_MS,
+                    timeout=self.timeout,
                 ) as response_info:
                     self._click_blank_outside_card(card, container_getter())
             except Exception as exc:
@@ -1067,6 +1060,7 @@ class NewAuditQualificationPage:
             self._wait_for_card_save_settle(
                 container_getter, index, qualification.index_name
             )
+            LOGGER.info("业务[%s] 资质[%s]：自动保存成功，页面已稳定", qualification_type.type_name, qualification.index_name)
             self._saved_uploads[(business_key, index)] = paths
             evidence = qualification.evidence_url or ""
             self._saved_evidence[(business_key, index)] = evidence
@@ -1180,9 +1174,11 @@ class NewAuditQualificationPage:
         )
 
     def fill_all(self, company: CompanyInput) -> None:
+        LOGGER.info("新版投放资质：检查输入业务类型，进入新增或已有草稿页面")
         types = ordered_new_audit_types(company)
         resumed_promotion = self.enter_add_business_page()
         assignments: list[tuple[QualificationType, int]] = []
+        LOGGER.info("推广审查：%s", "恢复已有草稿" if resumed_promotion else "准备默认业务")
         if resumed_promotion:
             self._upload_type_in(types[0], 0, lambda: self.page)
             self._validate_uploaded_scope(types[0], 0, self.page)
@@ -1190,13 +1186,17 @@ class NewAuditQualificationPage:
             self._saved_uploads.clear()
             self._saved_evidence.clear()
             self.enter_add_business_page(allow_resume=False)
+            LOGGER.info("清理新增页面默认业务")
             self.remove_all_default_businesses()
         else:
             promotion_index = self.prepare_promotion_business(types[0])
             assignments.append((types[0], promotion_index))
             self.upload_type(types[0], promotion_index)
         for qualification_type in types[1:]:
+            LOGGER.info("业务[%s]：新增业务并选择精确类型", qualification_type.type_name)
             business_index = self.add_business(qualification_type)
             assignments.append((qualification_type, business_index))
             self.upload_type(qualification_type, business_index)
+        LOGGER.info("全部业务上传完成：开始核对最终业务、资质和文件集合")
         self.validate_final_collection(tuple(assignments))
+        LOGGER.info("最终集合校验通过")

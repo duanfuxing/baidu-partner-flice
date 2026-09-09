@@ -346,7 +346,7 @@ class IndustryQualificationPage:
     def _confirm_dialog(self, expected_text: str | None = None) -> None:
         dialog = self.page.locator(".el-message-box:visible, [role=dialog]:visible").last
         try:
-            dialog.wait_for(state="visible", timeout=2_000)
+            dialog.wait_for(state="visible", timeout=self.timeout)
         except Exception:
             return
         text = dialog.inner_text()
@@ -501,7 +501,7 @@ class IndustryQualificationPage:
         self._confirm_dialog(card.qualification_no)
         expected_matching_count = len(before_matching) - 1
         expected_filled_count = before_filled_count - 1
-        deadline = time.monotonic() + min(self.timeout, 5_000) / 1000
+        deadline = time.monotonic() + self.timeout / 1000
         after_matching_count = len(before_matching)
         after_filled_count = before_filled_count
         while time.monotonic() < deadline:

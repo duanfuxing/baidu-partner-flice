@@ -157,7 +157,7 @@ class BrowserSession:
 
         self._playwright = sync_playwright().start()
         try:
-            launch_options = {"headless": self.config.headless}
+            launch_options = {"headless": self.config.headless, "timeout": self.config.timeout_ms}
             if self.config.executable_path is not None:
                 launch_options["executable_path"] = str(resolve_browser_path(str(self.config.executable_path)))
             else:
@@ -177,11 +177,12 @@ class BrowserSession:
                     name = "Google Chrome" if channel == "chrome" else "Microsoft Edge"
                     raise PageFlowError(
                         f"未找到 {name} 浏览器。请先安装 {name} 正式版，"
-                        "或在任务中心选择已安装浏览器的程序路径。"
+                        "或在设置页面选择已安装浏览器的程序路径。"
                     ) from exc
                 self.browser = self._playwright.chromium.launch(
                     executable_path=str(executable),
                     headless=self.config.headless,
+                    timeout=self.config.timeout_ms,
                 )
             context_kwargs = {
                 "viewport": {"width": 1440, "height": 1000},
@@ -259,7 +260,8 @@ class BrowserSession:
                 continue
         return None
 
-    def _wait_for_logged_in_page(self, preferred_page=None, timeout_ms: int = 10_000):
+    def _wait_for_logged_in_page(self, preferred_page=None, timeout_ms: int | None = None):
+        timeout_ms = self.config.timeout_ms if timeout_ms is None else timeout_ms
         deadline = time.monotonic() + timeout_ms / 1000
         while True:
             logged_in_page = self._find_logged_in_page(preferred_page)
@@ -278,7 +280,7 @@ class BrowserSession:
         page = self.new_page()
         page.goto(WORKBENCH_URL, wait_until="domcontentloaded")
         try:
-            page.wait_for_load_state("networkidle", timeout=10_000)
+            page.wait_for_load_state("networkidle", timeout=self.config.timeout_ms)
         except Exception:
             pass
         logged_in_page = self._find_logged_in_page(page)

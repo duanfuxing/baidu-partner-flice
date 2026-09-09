@@ -8,7 +8,7 @@ WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "build-desktop.yml"
 INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer.iss"
 X64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-x64.iss"
 ARM64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-arm64.iss"
-EXPECTED_VERSION = "0.30.8"
+EXPECTED_VERSION = "0.30.9"
 
 
 def test_workflow_does_not_build_on_branch_push() -> None:
@@ -93,3 +93,57 @@ def test_macos_pkg_installs_application_bundle_into_applications() -> None:
     assert '"dist/百度资质自动提交工具.app"' in workflow
     assert '--identifier "com.baidu.partner.flice"' in workflow
     assert f'--version "{EXPECTED_VERSION}"' in workflow
+
+
+def test_macos_installer_disables_bundle_relocation() -> None:
+    import plistlib
+
+    with (PROJECT_ROOT / 'packaging/macos-components.plist').open('rb') as stream:
+        components = plistlib.load(stream)
+    assert len(components) == 1
+    assert components[0]['RootRelativeBundlePath'] == '百度资质自动提交工具.app'
+    assert components[0]['BundleIsRelocatable'] is False
+    assert components[0]['BundleOverwriteAction'] == 'upgrade'
+    workflow = WORKFLOW_PATH.read_text(encoding='utf-8')
+    assert '--root "build/macos-installer-root"' in workflow
+    assert '--component-plist "packaging/macos-components.plist"' in workflow
+    assert 'ditto "dist/百度资质自动提交工具.app"' in workflow
+
+
+def test_actual_macos_package_has_fixed_install_location(tmp_path: Path) -> None:
+    import plistlib
+    import subprocess
+    import sys
+    import xml.etree.ElementTree as ET
+    import pytest
+
+    if sys.platform != 'darwin':
+        pytest.skip('macOS pkgbuild integration test')
+    payload = tmp_path / 'payload'
+    app = payload / '百度资质自动提交工具.app' / 'Contents'
+    executable = app / 'MacOS' / 'TestApp'
+    executable.parent.mkdir(parents=True)
+    executable.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+    executable.chmod(0o755)
+    with (app / 'Info.plist').open('wb') as stream:
+        plistlib.dump({
+            'CFBundleIdentifier': 'com.baidu.partner.flice',
+            'CFBundleExecutable': 'TestApp',
+            'CFBundlePackageType': 'APPL',
+            'CFBundleVersion': EXPECTED_VERSION,
+            'CFBundleShortVersionString': EXPECTED_VERSION,
+        }, stream)
+    package = tmp_path / 'test.pkg'
+    subprocess.run([
+        'pkgbuild', '--root', str(payload), '--component-plist',
+        str(PROJECT_ROOT / 'packaging/macos-components.plist'),
+        '--install-location', '/Applications', '--identifier', 'com.baidu.partner.flice',
+        '--version', EXPECTED_VERSION, str(package),
+    ], check=True, capture_output=True, text=True)
+    expanded = tmp_path / 'expanded'
+    subprocess.run(['pkgutil', '--expand', str(package), str(expanded)], check=True, capture_output=True)
+    info = ET.parse(expanded / 'PackageInfo').getroot()
+    assert info.get('install-location') == '/Applications'
+    assert info.get('relocatable') == 'false'
+    assert info.find('bundle').get('path').lstrip('./') == '百度资质自动提交工具.app'
+    assert not info.findall('relocate/bundle')

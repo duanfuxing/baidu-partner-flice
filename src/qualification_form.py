@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
+import logging
 import time
 from datetime import date
 from pathlib import Path
 
 from .errors import PageFlowError
+from .upload_retry import upload_with_retry
+
+LOGGER = logging.getLogger(__name__)
 from .industry_qualification import QualificationCardSnapshot
 from .models import Qualification
 
@@ -129,32 +133,37 @@ class QualificationForm:
         paths = [str(path.resolve()) for path in qualification.files]
         uploaded_identifiers: list[str] = []
         for path in paths:
-            try:
-                with self.page.expect_response(
-                    lambda response: "/permit/web/permit/savelicepic" in response.url,
-                    timeout=self.timeout,
-                ) as response_info:
-                    file_input.first.set_input_files(path)
-                response = response_info.value
+            description = f"资质[{qualification.index_name}] 文件[{Path(path).name}]"
+
+            def uploaded_count():
+                if not self.dialog.locator(".el-upload-list, [data-upload-file], [class*='file-preview']").count():
+                    return None
+                if self.dialog.locator(".is-uploading, .is-ready").count():
+                    return None
+                return len(self._visible_upload_items())
+
+            def trigger():
+                current_input = self.dialog.locator('input[type="file"]').first
+                current_input.evaluate("element => { element.value = ''; }")
+                current_input.set_input_files(path)
+
+            def validate(response):
                 if not response.ok:
-                    raise PageFlowError(
-                        f"资质文件上传接口 HTTP {response.status}：{Path(path).name}"
-                    )
+                    raise PageFlowError(f"文件上传 HTTP {response.status}")
                 payload = response.json()
-                if payload.get("status") != 0 or not payload.get("data"):
-                    raise PageFlowError(
-                        f"资质文件上传失败：{Path(path).name}："
-                        f"{payload.get('message') or payload.get('status')}"
-                    )
-                uploaded_identifiers.append(str(payload["data"]))
-                self._handle_ocr_prompt()
-                self.page.wait_for_timeout(300)
-            except PageFlowError:
-                raise
-            except Exception as exc:
-                raise PageFlowError(
-                    f"资质文件上传未收到成功响应：{Path(path).name}"
-                ) from exc
+                if not isinstance(payload, dict) or payload.get("status") != 0 or not payload.get("data"):
+                    raise PageFlowError("文件上传接口未返回成功文件标识")
+
+            responses = upload_with_retry(
+                self.page, trigger, uploaded_count, validate,
+                description=description, timeout_ms=self.timeout,
+            )
+            if not responses:
+                raise PageFlowError(f"{description}：页面已有文件但缺少成功上传凭据，停止，不重复上传")
+            uploaded_identifiers.append(str(responses[0].json()["data"]))
+            LOGGER.info("%s：处理 OCR 提示", description)
+            self._handle_ocr_prompt()
+            self.page.wait_for_timeout(300)
         if len(uploaded_identifiers) != len(paths):
             raise PageFlowError(
                 f"资质文件上传数量不一致，期望 {len(paths)}，成功 {len(uploaded_identifiers)}"
@@ -196,7 +205,7 @@ class QualificationForm:
         for control in reversed(visible_controls):
             before = len(self._visible_upload_items())
             control.click(timeout=self.timeout)
-            deadline = time.monotonic() + min(self.timeout, 5_000) / 1000
+            deadline = time.monotonic() + self.timeout / 1000
             while time.monotonic() < deadline:
                 if len(self._visible_upload_items()) < before:
                     break
@@ -323,9 +332,9 @@ class QualificationForm:
         qualification: Qualification,
         *,
         stable_ms: int = 1_500,
-        max_wait_ms: int = 10_000,
+        max_wait_ms: int | None = None,
     ) -> None:
-        deadline = time.monotonic() + max_wait_ms / 1000
+        deadline = time.monotonic() + (self.timeout if max_wait_ms is None else max_wait_ms) / 1000
         stable_since: float | None = None
         while time.monotonic() < deadline:
             self._dismiss_visible_ocr_prompt()
@@ -344,7 +353,7 @@ class QualificationForm:
 
     def submit(self, qualification: Qualification) -> None:
         # 关闭最后一刻出现的 OCR 提示后重新进入稳定校验，不能直接提交。
-        self.stabilize_and_verify(qualification, stable_ms=800, max_wait_ms=5_000)
+        self.stabilize_and_verify(qualification, stable_ms=800, max_wait_ms=self.timeout)
         submit = self.dialog.get_by_text("提交", exact=True)
         if submit.count() != 1:
             raise PageFlowError("资质弹窗找不到唯一“提交”按钮")

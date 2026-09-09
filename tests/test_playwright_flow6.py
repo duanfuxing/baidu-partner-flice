@@ -1255,7 +1255,7 @@ def test_upload_ocr_permanent_verification_and_submit_with_local_html(
     page.route("**/permit/web/permit/**", route_handler)
     page.set_content(
         """
-        <base href="https://local.test/">
+        <base href="https://fkzhunru.baidu.com/">
         <div class="el-dialog">
           <div class="el-form-item">上传资质文件<input id="files" type="file"></div>
           <ul class="el-upload-list"></ul>
@@ -1666,7 +1666,8 @@ def test_submit_all_clicks_confirmation_and_validates_success(browser) -> None:
     page.close()
 
 
-def test_new_audit_start_review_confirms_and_validates_submitall(browser) -> None:
+@pytest.mark.parametrize("confirmation_delay", [0, 3500])
+def test_new_audit_start_review_confirms_and_validates_submitall(browser, confirmation_delay) -> None:
     request_count = {"value": 0}
 
     def route_handler(route) -> None:
@@ -1693,13 +1694,13 @@ def test_new_audit_start_review_confirms_and_validates_submitall(browser) -> Non
               await fetch('/permit/web/permit/submitall', {method: 'POST'});
               dialog.remove();
             });
-            document.body.appendChild(dialog);
+            setTimeout(() => document.body.appendChild(dialog), CONFIRMATION_DELAY);
           });
         </script>
-        """
+        """.replace("CONFIRMATION_DELAY", str(confirmation_delay))
     )
 
-    submit_all_qualifications(page, timeout=2_000)
+    submit_all_qualifications(page, timeout=5_000)
 
     assert request_count["value"] == 1
     assert page.locator(".el-message-box").count() == 0
@@ -1759,4 +1760,97 @@ def test_submit_all_rejects_non_200_success_response(browser) -> None:
     with pytest.raises(PageFlowError, match="HTTP 201"):
         submit_all_qualifications(page, timeout=4_000)
 
+    page.close()
+
+
+@pytest.mark.parametrize('failures,expected_calls', [(0, 1), (1, 2), (3, 4), (4, 4)])
+def test_upload_retries_only_when_card_has_no_new_file(browser, tmp_path, failures, expected_calls, caplog):
+    from src.upload_retry import upload_with_retry
+    page = browser.new_page()
+    calls = []
+    def serve(route):
+        calls.append(1)
+        route.fulfill(status=503 if len(calls) <= failures else 200,
+                      content_type='application/json', body='{"status":0}')
+    page.route('https://fkzhunru.baidu.com/permit/web/permit/savelicepic', serve)
+    page.set_content('''<input type="file"><div id="files"></div><script>
+    document.querySelector('input').onchange=async()=>{
+      const r=await fetch('https://fkzhunru.baidu.com/permit/web/permit/savelicepic',{method:'POST'});
+      if(r.ok) document.querySelector('#files').appendChild(document.createElement('img'));
+    };</script>''')
+    file = tmp_path/'测试图片.png'; file.write_bytes(b'image')
+    def trigger():
+        page.locator('input').evaluate("e=>{e.value=''}")
+        page.locator('input').set_input_files(str(file))
+    def validate(response):
+        if response.status != 200:
+            raise PageFlowError('HTTP failure')
+    caplog.set_level('INFO')
+    try:
+        if failures == 4:
+            with pytest.raises(PageFlowError, match='已重试 3 次'):
+                upload_with_retry(page, trigger, lambda: page.locator('#files img').count(), validate,
+                                  description='业务[推广审查] 资质[资质1] 文件[测试图片.png]', timeout_ms=500)
+        else:
+            upload_with_retry(page, trigger, lambda: page.locator('#files img').count(), validate,
+                              description='业务[推广审查] 资质[资质1] 文件[测试图片.png]', timeout_ms=500)
+            assert page.locator('#files img').count() == 1
+        assert len(calls) == expected_calls
+        assert '资质[资质1]' in caplog.text
+        assert not page._impl_obj.listeners('request')
+        assert not page._impl_obj.listeners('response')
+    finally:
+        page.close()
+
+
+def test_upload_error_with_existing_preview_does_not_retry(browser, tmp_path):
+    from src.upload_retry import upload_with_retry
+    page=browser.new_page(); calls=[]
+    def serve(route):
+        calls.append(1)
+        route.fulfill(status=503,body='failed')
+    page.route('https://fkzhunru.baidu.com/permit/web/permit/savelicepic',serve)
+    page.set_content('''<input type="file"><div id="files"></div><script>
+    document.querySelector('input').onchange=async()=>{
+      await fetch('https://fkzhunru.baidu.com/permit/web/permit/savelicepic',{method:'POST'});
+      setTimeout(()=>document.querySelector('#files').appendChild(document.createElement('img')),100);
+    };</script>''')
+    file=tmp_path/'proof.png'; file.write_bytes(b'image')
+    def validate(response):
+        raise PageFlowError('response failed')
+    result=upload_with_retry(page, lambda:page.locator('input').set_input_files(str(file)),
+                             lambda:page.locator('#files img').count(),validate,
+                             description='资质1/proof.png',timeout_ms=500)
+    assert result == []
+    assert len(calls)==1
+    page.close()
+
+
+def test_upload_unknown_preview_does_not_retry_selected_input(browser, tmp_path):
+    from src.upload_retry import upload_with_retry
+    page=browser.new_page(); page.set_content('<input type="file">')
+    file=tmp_path/'proof.png'; file.write_bytes(b'image'); calls=[]
+    def trigger():
+        calls.append(1); page.locator('input').set_input_files(str(file))
+    with pytest.raises(PageFlowError, match='无法确认文件缺失'):
+        upload_with_retry(page,trigger,lambda:None,lambda response:None,
+                          description='资质1/proof.png',timeout_ms=200)
+    assert len(calls)==1
+    assert page.locator('input').evaluate('e=>e.files.length')==1
+    page.close()
+
+
+def test_pending_upload_is_not_retried(browser, tmp_path):
+    from src.upload_retry import upload_with_retry
+    page=browser.new_page(); routes=[]
+    page.route('https://fkzhunru.baidu.com/permit/web/permit/savelicepic',lambda route:routes.append(route))
+    page.set_content('''<input type="file"><script>
+    document.querySelector('input').onchange=()=>fetch('https://fkzhunru.baidu.com/permit/web/permit/savelicepic',{method:'POST'});
+    </script>''')
+    file=tmp_path/'proof.png'; file.write_bytes(b'image')
+    with pytest.raises(PageFlowError, match='请求仍在执行'):
+        upload_with_retry(page,lambda:page.locator('input').set_input_files(str(file)),lambda:0,
+                          lambda response:None,description='资质1/proof.png',timeout_ms=300)
+    assert len(routes)==1
+    routes[0].abort()
     page.close()

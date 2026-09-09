@@ -104,7 +104,69 @@ def test_run_job_passes_browser_selection_to_scheduler(monkeypatch, tmp_path):
     run = Mock(return_value={'successes': [], 'failures': []})
     monkeypatch.setattr(module, 'run_validated_companies', run)
     executable = tmp_path/'edge.exe'
-    app._run_job(tmp_path, False, 'msedge', executable)
+    app._run_job(tmp_path, False, 'msedge', executable, 120_000)
     config = run.call_args.kwargs['browser_config']
     assert config.chrome_channel == 'msedge'
     assert config.executable_path == executable
+    assert config.timeout_ms == 120_000
+    assert run.call_args.kwargs['workflow_config'].page_timeout_ms == 120_000
+
+
+def test_invalid_timeout_prevents_start(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import src.gui as module
+    app = object.__new__(DesktopApplication)
+    app.running = False
+    app.report = SimpleNamespace(input_root=tmp_path)
+    app.input_path = _WidgetStub(str(tmp_path))
+    app.final_submit = _WidgetStub('')
+    app.timeout_seconds = _WidgetStub('0')
+    app._show_page = Mock()
+    error = Mock()
+    monkeypatch.setattr(module.messagebox, 'showerror', error)
+    app._start_run()
+    error.assert_called_once()
+    assert error.call_args.args[0] == '超时设置无效'
+    assert app.running is False
+
+
+@pytest.mark.parametrize('confirmed', [False, True])
+def test_history_delete_requires_confirmation(monkeypatch, tmp_path, confirmed):
+    from unittest.mock import Mock
+    import src.gui as module
+    app=object.__new__(DesktopApplication)
+    path=tmp_path/'run-example.log';path.write_text('log',encoding='utf-8')
+    app.selected_history_path=path;app.running=False;app.current_log=None
+    app.data_directories={'logs':tmp_path};app._refresh_log_history=Mock()
+    monkeypatch.setattr(module.messagebox,'askyesno',lambda *args:confirmed)
+    app._delete_history_log()
+    assert path.exists() is not confirmed
+    assert app._refresh_log_history.call_count == int(confirmed)
+
+
+def test_history_delete_blocks_running_log(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import src.gui as module
+    app=object.__new__(DesktopApplication)
+    path=tmp_path/'run-example.log';path.write_text('log',encoding='utf-8')
+    app.selected_history_path=path;app.running=True;app.current_log=path
+    warning=Mock();monkeypatch.setattr(module.messagebox,'showwarning',warning)
+    app._delete_history_log()
+    warning.assert_called_once();assert path.exists()
+
+
+def test_history_delete_failure_keeps_selection(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import src.gui as module
+    app=object.__new__(DesktopApplication)
+    path=tmp_path/'run-example.log';path.write_text('log',encoding='utf-8')
+    app.selected_history_path=path;app.running=False;app.current_log=None
+    app.data_directories={'logs':tmp_path};app._refresh_log_history=Mock()
+    monkeypatch.setattr(module.messagebox,'askyesno',lambda *args:True)
+    monkeypatch.setattr(module,'delete_run_log',Mock(side_effect=PermissionError('file in use')))
+    error=Mock();monkeypatch.setattr(module.messagebox,'showerror',error)
+    app._delete_history_log()
+    error.assert_called_once();assert path.exists()
+    assert app.selected_history_path==path
+    app._refresh_log_history.assert_not_called()

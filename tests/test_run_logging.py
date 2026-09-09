@@ -72,3 +72,36 @@ def test_incremental_log_reader_resets_after_truncation(tmp_path: Path) -> None:
     path.write_text("new", encoding="utf-8")
 
     assert reader.read_new() == ("new", True)
+
+
+def test_delete_history_log_protects_active_and_outside_files(tmp_path):
+    import pytest
+    from src.run_logging import delete_run_log
+    directory=tmp_path/'logs'; directory.mkdir()
+    path=directory/'run-test.log'; path.write_text('test',encoding='utf-8')
+    with pytest.raises(ValueError,match='正在使用'):
+        delete_run_log(path,log_directory=directory,active_log=path)
+    other=tmp_path/'run-other.log';other.write_text('keep',encoding='utf-8')
+    with pytest.raises(ValueError,match='只能删除'):
+        delete_run_log(other,log_directory=directory)
+    link=directory/'run-link.log';link.symlink_to(other)
+    with pytest.raises(ValueError,match='只能删除'):
+        delete_run_log(link,log_directory=directory)
+    delete_run_log(path,log_directory=directory)
+    assert not path.exists()
+    assert other.exists()
+
+
+def test_delete_history_closes_own_file_handler(tmp_path):
+    import logging
+    from src.run_logging import delete_run_log
+    path=tmp_path/'run-test.log'
+    handler=logging.FileHandler(path,encoding='utf-8');handler._baidu_flice_handler=True
+    logging.getLogger().addHandler(handler)
+    try:
+        delete_run_log(path,log_directory=tmp_path)
+        assert handler.stream is None
+        assert handler not in logging.getLogger().handlers
+        assert not path.exists()
+    finally:
+        logging.getLogger().removeHandler(handler);handler.close()

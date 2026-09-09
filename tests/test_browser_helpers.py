@@ -140,7 +140,7 @@ def test_browser_launch_chrome_errors(monkeypatch, tmp_path, scenario) -> None:
         with session:
             assert session.browser is browser
         if scenario == "fallback":
-            driver.chromium.launch.assert_called_with(executable_path=str(executable), headless=False)
+            driver.chromium.launch.assert_called_with(executable_path=str(executable), headless=False, timeout=30_000)
         else:
             finder.assert_not_called()
     else:
@@ -165,7 +165,7 @@ def test_explicit_browser_path_has_priority(monkeypatch, tmp_path):
     driver = manager.start.return_value
     monkeypatch.setattr(api, 'sync_playwright', lambda: manager)
     with BrowserSession(BrowserConfig(executable_path=executable, chrome_channel='msedge', auth_state_path=tmp_path/'state')):
-        driver.chromium.launch.assert_called_once_with(executable_path=str(executable.resolve()), headless=False)
+        driver.chromium.launch.assert_called_once_with(executable_path=str(executable.resolve()), headless=False, timeout=30_000)
 
 
 def test_resolve_macos_app_and_missing_path(tmp_path):

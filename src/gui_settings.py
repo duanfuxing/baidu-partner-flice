@@ -7,6 +7,29 @@ from pathlib import Path
 
 SETTINGS_FILENAME = "settings.json"
 LAST_INPUT_DIRECTORY_KEY = "lastInputDirectory"
+DEFAULT_TIMEOUT_SECONDS = 30
+
+
+def parse_timeout_seconds(value: str) -> int:
+    if not value.strip().isascii() or not value.strip().isdigit():
+        raise ValueError("操作超时请输入 5–600 的整数秒数")
+    seconds = int(value.strip())
+    if not 5 <= seconds <= 600:
+        raise ValueError("操作超时请输入 5–600 的整数秒数")
+    return seconds
+
+
+def load_timeout_seconds(cache_directory: Path) -> int:
+    try:
+        return parse_timeout_seconds(str(_load_settings(cache_directory).get("timeoutSeconds", DEFAULT_TIMEOUT_SECONDS)))
+    except ValueError:
+        return DEFAULT_TIMEOUT_SECONDS
+
+
+def save_timeout_seconds(cache_directory: Path, value: str) -> int:
+    seconds = parse_timeout_seconds(value)
+    _save_settings(cache_directory, {"timeoutSeconds": seconds})
+    return seconds
 
 
 def _load_settings(cache_directory: Path) -> dict:

@@ -128,6 +128,25 @@ def list_run_logs(log_directory: Path | None = None) -> tuple[Path, ...]:
     )
 
 
+def delete_run_log(path: Path, *, log_directory: Path | None = None,
+                   active_log: Path | None = None) -> None:
+    directory = (log_directory or application_data_dir() / "logs").resolve()
+    if path.is_symlink() or path.resolve().parent != directory or not path.match("run-*.log"):
+        raise ValueError("只能删除历史日志目录中的运行日志")
+    if active_log is not None and path.resolve() == active_log.resolve():
+        raise ValueError("当前任务正在使用此日志，请在任务结束后删除")
+    if not path.is_file():
+        raise ValueError("日志文件不存在，请刷新列表")
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if (isinstance(handler, logging.FileHandler)
+                and getattr(handler, "_baidu_flice_handler", False)
+                and Path(handler.baseFilename).resolve() == path.resolve()):
+            root.removeHandler(handler)
+            handler.close()
+    path.unlink()
+
+
 class IncrementalLogReader:
     """按新增字节读取 UTF-8 日志，并处理跨读取字符及文件替换。"""
 
