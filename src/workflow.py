@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .api_client import BaiduApiClient
+from .url_overview import search_url_overview
 from .browser import (
     BrowserSession,
     is_new_audit_landing_url,
@@ -301,28 +302,18 @@ def enter_qualification_page(page, qualification_url: str, timeout: int):
 
 
 def _find_url_row(page, target_url: str):
-    exact_url = page.get_by_text(target_url, exact=True)
-    if exact_url.count():
-        url_locator = exact_url.first
-        ancestor_candidates = [
-            url_locator.locator("xpath=ancestor::tr[1]"),
-            url_locator.locator('xpath=ancestor::*[@role="row"][1]'),
-            url_locator.locator("xpath=ancestor::*[contains(@class, 'el-table__row')][1]"),
-        ]
-        for ancestor in ancestor_candidates:
-            if ancestor.count():
-                return ancestor, exact_url.count()
-
-    candidates = [
-        page.locator("tr").filter(has_text=target_url),
-        page.locator('[role="row"]').filter(has_text=target_url),
-    ]
-    for candidate in candidates:
-        count = candidate.count()
-        if count:
-            return candidate, count
-
-    return None, 0
+    rows = page.locator('tr, [role="row"], .el-table__row')
+    matches = []
+    for index in range(rows.count()):
+        row = rows.nth(index)
+        if not row.is_visible():
+            continue
+        cells = row.locator('td, [role="cell"]')
+        if any(text.strip() == target_url for text in cells.all_inner_texts()):
+            matches.append(row)
+        elif any(text.strip() == target_url for text in row.locator('a[href]').all_inner_texts()):
+            matches.append(row)
+    return (matches[0], len(matches)) if matches else (None, 0)
 
 
 def _click_view_in_row(page, row, timeout: int) -> None:
@@ -404,24 +395,26 @@ def select_url_and_open_industry_qualification(
     """匹配 URL 行并返回旧版或新版实际承载投放资质详情的页面。"""
 
     _wait_for_exact_text(page, "URL状态概览", timeout)
-    for page_number in range(1, max_pages + 1):
+    searched = search_url_overview(page, target_url, timeout)
+    scope = page.locator('.url-overview').filter(has_text='URL状态概览') if searched else page
+    for page_number in range(1, (1 if searched else max_pages) + 1):
         # “URL状态概览”标题先出现，表格数据随后异步加载。先等待目标 URL
         # 在当前页出现一小段时间，再执行 DOM 行匹配。
-        try:
-            page.get_by_text(target_url, exact=True).first.wait_for(
-                state="visible",
-                timeout=timeout,
-            )
-        except Exception:
-            pass
-        row, count = _find_url_row(page, target_url)
+        if not searched:
+            try:
+                page.get_by_text(target_url, exact=True).first.wait_for(
+                    state="visible", timeout=timeout,
+                )
+            except Exception:
+                pass
+        row, count = _find_url_row(scope, target_url)
         if count > 1:
             raise PageFlowError(f"页面中匹配到多个相同 URL：{target_url}")
         if row is not None:
             existing_pages = tuple(page.context.pages)
             _click_view_in_row(page, row, timeout)
             return _wait_for_qualification_detail_page(page, existing_pages, timeout)
-        if page_number == max_pages or not _click_next_page(page, timeout):
+        if searched or page_number == max_pages or not _click_next_page(page, timeout):
             break
         try:
             page.wait_for_load_state("networkidle", timeout=timeout)

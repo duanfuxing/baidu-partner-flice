@@ -1,4 +1,4 @@
-"""只在当前卡片明确未增加文件且请求结束时重试上传。"""
+"""上传结果明确后核验预览；有清理能力时先移除失败项再重试。"""
 
 import logging
 import time
@@ -10,6 +10,19 @@ LOGGER = logging.getLogger(__name__)
 MAX_UPLOAD_RETRIES = 3
 
 
+def _explicit_failure(response):
+    if 500 <= response.status < 600:
+        return True
+    if response.status != 200:
+        return False
+    try:
+        payload = response.json()
+        return (isinstance(payload, dict) and type(payload.get('status')) is int
+                and payload['status'] != 0)
+    except Exception:
+        return False
+
+
 def is_upload_request(request):
     parsed = urlsplit(request.url)
     return (parsed.scheme == "https" and parsed.hostname == "fkzhunru.baidu.com"
@@ -18,8 +31,8 @@ def is_upload_request(request):
 
 
 def upload_with_retry(page, trigger, uploaded_count, validate, *, description, timeout_ms,
-                      file_count=1):
-    """成功响应与预览分别核验；仅明确失败且无新增文件时重试。"""
+                      file_count=1, verify_success=None, cleanup_failed=None):
+    """成功响应与预览分别核验；重试前必须恢复已验证的文件集合。"""
     baseline = uploaded_count()
     for attempt in range(MAX_UPLOAD_RETRIES + 1):
         requests, pending, responses = set(), set(), []
@@ -82,7 +95,43 @@ def upload_with_retry(page, trigger, uploaded_count, validate, *, description, t
                     failure = f"上传响应校验失败（HTTP {response.status}）"
                 else:
                     valid.append(response)
+                    LOGGER.info('%s：上传业务状态校验通过', description)
             LOGGER.info("%s：当前卡片已上传文件数 %s", description, current if current is not None else "未知")
+            if cleanup_failed is not None:
+                # 只有已结束且每个请求都有响应，才有资格删除当前失败项。
+                def ensure_settled():
+                    if (pending or failed_requests or len(requests) != file_count
+                            or len(responses) != file_count):
+                        raise PageFlowError(f'{description}：上传请求集合不确定或发生变化，停止清理和重传')
+
+                ensure_settled()
+                retryable = (len(valid) == file_count
+                                       or all(_explicit_failure(r) for r in responses))
+                if retryable:
+                    if len(valid) == file_count and baseline is not None and current == baseline + file_count:
+                        try:
+                            if verify_success is not None:
+                                verify_success(valid)
+                        except PageFlowError as exc:
+                            failure = str(exc)
+                        else:
+                            ensure_settled()
+                            return valid
+                    elif valid:
+                        failure = '上传响应成功，但当前文件预览未完整回填'
+                    # 清理失败会直接抛错，不能带着未确认的页面再次上传。
+                    ensure_settled()
+                    try:
+                        cleanup_failed(valid, ensure_settled)
+                    except PageFlowError as exc:
+                        raise PageFlowError(f'{description}：{failure}；清理未完成：{exc}') from exc
+                    ensure_settled()
+                    if uploaded_count() != baseline:
+                        raise PageFlowError(f'{description}：删除失败项后文件数未恢复，停止')
+                    if attempt == MAX_UPLOAD_RETRIES:
+                        raise PageFlowError(f'{description}：{failure}，已重试 {MAX_UPLOAD_RETRIES} 次，停止当前公司')
+                    LOGGER.warning('%s：%s；失败项已清理，准备重新上传', description, failure)
+                    continue
             if baseline is not None and current == baseline + file_count:
                 if pending:
                     raise PageFlowError(f"{description}：文件已出现但上传请求仍未结束，停止以避免重复上传")

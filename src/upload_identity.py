@@ -3,10 +3,13 @@
 from dataclasses import dataclass
 import hashlib
 import base64
+import logging
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .errors import PageFlowError
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -101,18 +104,21 @@ def verify_preview_content(page, receipts, files, timeout):
                 const timer = setTimeout(() => controller.abort(), timeout);
                 try {
                     const response = await fetch(url, {cache:'no-store', signal:controller.signal});
-                    if (response.status !== 200) return null;
+                    if (response.status !== 200) return {status: response.status};
                     const bytes = new Uint8Array(await response.arrayBuffer());
                     let binary = '';
                     for (let i=0; i<bytes.length; i+=8192)
                         binary += String.fromCharCode(...bytes.subarray(i, i+8192));
-                    return btoa(binary);
+                    return {status: response.status, body: btoa(binary)};
                 } finally {clearTimeout(timer);}
             }""", {'url': item['url'], 'timeout': timeout})
-            if result is None:
-                raise ValueError('file unavailable')
-            actual = hashlib.sha256(base64.b64decode(result)).hexdigest()
+            LOGGER.info('文件[%s]：预览地址返回 HTTP %s', receipt.path.name, result['status'])
+            if result['status'] != 200:
+                raise PageFlowError(f'文件“{receipt.path.name}”预览访问失败（HTTP {result["status"]}）')
+            actual = hashlib.sha256(base64.b64decode(result['body'])).hexdigest()
+        except PageFlowError:
+            raise
         except Exception:
-            raise PageFlowError(f'文件“{receipt.path.name}”预览读取失败，停止，不重复上传') from None
+            raise PageFlowError(f'文件“{receipt.path.name}”预览读取失败') from None
         if actual != receipt.sha256:
-            raise PageFlowError(f'文件“{receipt.path.name}”服务端内容与原始文件不同，存在覆盖或转换，停止，不重复上传')
+            raise PageFlowError(f'文件“{receipt.path.name}”服务端内容与原始文件不同，存在覆盖或转换')

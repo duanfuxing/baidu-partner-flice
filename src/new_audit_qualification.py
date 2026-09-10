@@ -970,6 +970,42 @@ class NewAuditQualificationPage:
             verify_file_identities(receipts, [item['id'] for item in preview_files(card_getter())],
                                    description=f'资质“{name}”内容核验后')
 
+    def _remove_failed_upload(self, card_getter, receipts, responses, path, name,
+                              request_guard=None):
+        """只删除本次串行上传新增的唯一条目，原有成功文件必须完整。"""
+        expected = [item.server_id for item in receipts]
+        files = preview_files(card_getter())
+        ids = [item['id'] for item in files]
+        if ids[:len(expected)] != expected or len(ids) not in (len(expected), len(expected) + 1):
+            raise PageFlowError(f'资质“{name}”失败项无法唯一定位，停止，不删除其他文件')
+        if receipts:
+            verify_preview_content(self.page, receipts, files[:len(expected)], self.timeout)
+        if len(ids) == len(expected):
+            if responses:
+                raise PageFlowError(f'资质“{name}”上传成功但条目未出现，无法确认可安全重传')
+        else:
+            if responses:
+                receipt = UploadReceipt.from_response(path, responses[0])
+                if ids[-1] != receipt.server_id:
+                    raise PageFlowError(f'资质“{name}”新增条目与当前上传标识不符，停止删除')
+            card = card_getter()
+            card.hover(timeout=self.timeout)
+            item = card.locator('.preview-list-li').nth(len(expected))
+            delete = item.locator('.delete-btn')
+            if delete.count() != 1 or not delete.is_visible():
+                raise PageFlowError(f'资质“{name}”找不到当前失败图片的删除按钮，停止重传')
+            # 绑定当前 DOM 节点，避免后续 nth 因异步插入而指向另一张图。
+            button = delete.element_handle()
+            snapshot = [(item['id'], item['url']) for item in files]
+            latest = [(item['id'], item['url']) for item in preview_files(card_getter())]
+            if latest != snapshot or button is None:
+                raise PageFlowError(f'资质“{name}”删除前文件列表发生变化，停止删除')
+            if request_guard is not None:
+                request_guard()
+            button.click(timeout=self.timeout)
+            LOGGER.info('文件[%s]：已点击失败条目的删除按钮，核对剩余文件', path.name)
+        self._verify_file_receipts(card_getter, receipts, name, content=True)
+
     def _wait_for_card_save_settle(
         self,
         container_getter,
@@ -1088,10 +1124,23 @@ class NewAuditQualificationPage:
                     current_input.evaluate("element => { element.value = ''; }")
                     current_input.set_input_files([str(path) for path in batch])
 
+                def verify_current(responses):
+                    candidate = UploadReceipt.from_response(batch[0], responses[0])
+                    attempted = [*receipts, candidate]
+                    # 每张立即检查可访问性与内容，不等整张资质卡保存后才发现坏图。
+                    verify_preview_content(self.page, attempted, preview_files(current_card()), self.timeout)
+                    self._verify_file_receipts(current_card, attempted, qualification.index_name)
+
+                has_preview = bool(current_card().locator('.preview-container').count())
+
                 responses = upload_with_retry(
                     self.page, trigger, uploaded_count,
                     lambda response: self._submitlice_response(response, "文件上传"),
                     description=description, timeout_ms=self.timeout, file_count=len(batch),
+                    verify_success=verify_current if has_preview else None,
+                    cleanup_failed=(lambda responses, guard: self._remove_failed_upload(
+                        current_card, receipts, responses, batch[0], qualification.index_name, guard
+                    )) if has_preview else None,
                 )
                 uploaded_total += len(batch)
                 self._wait_for_uploaded_file_state(current_card(), uploaded_total, qualification.index_name)
