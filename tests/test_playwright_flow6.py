@@ -162,9 +162,11 @@ def test_new_audit_entry_opens_qualification_overview_in_new_page(browser) -> No
     context.close()
 
 
+@pytest.mark.parametrize("lose_files_on_save", [False, True])
 def test_new_audit_business_cleanup_and_one_qualification_per_form(
     browser,
     tmp_path: Path,
+    lose_files_on_save,
 ) -> None:
     context = browser.new_context()
     page_url = "https://fkzhunru.baidu.com/newaudit#/lice/add_invest_lice/10001/token"
@@ -180,7 +182,7 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
       <div class="business-field"><span>*</span><span>经营业务</span><span>推广审查</span></div>
       <div id="forms">
         <div class="file-form form-card" style="width:60%">
-          <span>资质图片</span><input type="file">
+          <span>资质图片</span><input type="file" multiple>
           <div class="preview-container"><span class="file-count" style="display:none"></span></div>
           <span>资质状态</span><span class="save-status">待保存</span>
           <span>举证链接</span><input placeholder="请输入">
@@ -189,9 +191,9 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
       <label><input id="supplement" type="checkbox">我还需要补充其他资质</label>
       <button id="more">新增补充资质</button>
     </section>
-    <section class="business-card" data-index="2"><h2>业务2</h2><div class="business-field"><span>经营业务</span><span>三类医疗器械（不可个人，B）</span></div><input type="file"><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
-    <section class="business-card" data-index="3"><h2>业务3</h2><div class="business-field"><span>经营业务</span><span>入驻商城类（不可个人，C2）</span></div><input type="file"><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
-    <section class="business-card" data-index="4"><h2>业务4</h2><div class="business-field"><span>经营业务</span><span>电商代运营【房产承诺函传营业执照（如未要求提交承诺函请忽略）】</span></div><input type="file"><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
+    <section class="business-card" data-index="2"><h2>业务2</h2><div class="business-field"><span>经营业务</span><span>三类医疗器械（不可个人，B）</span></div><input type="file" multiple><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
+    <section class="business-card" data-index="3"><h2>业务3</h2><div class="business-field"><span>经营业务</span><span>入驻商城类（不可个人，C2）</span></div><input type="file" multiple><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
+    <section class="business-card" data-index="4"><h2>业务4</h2><div class="business-field"><span>经营业务</span><span>电商代运营【房产承诺函传营业执照（如未要求提交承诺函请忽略）】</span></div><input type="file" multiple><span>举证链接</span><input><span>我还需要补充其他资质</span></section>
     <script>
       document.querySelectorAll('[aria-label^="关闭业务"]').forEach(button => {
         button.addEventListener('click', () => {
@@ -204,7 +206,7 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
         const form = document.createElement('div');
         form.className = 'file-form form-card';
         form.style.width = '60%';
-        form.innerHTML = '<span>资质图片</span><input type="file">' +
+        form.innerHTML = '<span>资质图片</span><input type="file" multiple>' +
           '<div class="preview-container"><span class="file-count" style="display:none"></span></div>' +
           '<span>资质状态</span><span class="save-status">待保存</span>' +
           '<span>举证链接</span><input placeholder="请输入">';
@@ -214,8 +216,15 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
       function bind(root) {
             root.querySelector('input[type="file"]').addEventListener(
               'change', async event => {
+                window.batchSizes = [...(window.batchSizes || []), event.target.files.length];
                 for (const file of event.target.files) {
-                  await fetch('/permit/web/permit/savelicepic', {method: 'POST'});
+                  const response = await fetch('/permit/web/permit/savelicepic', {method: 'POST'});
+                  const result = await response.json();
+                  root.dataset.ids = [root.dataset.ids, result.data].filter(Boolean).join(',');
+                  const li = document.createElement('li');
+                  li.className = 'preview-list-li';
+                  li.innerHTML = '<img src="/permit/get?filename=' + result.data + '">';
+                  root.querySelector('.preview-container').appendChild(li);
                 }
                 // 浏览器的 response 事件早于上传组件 success 回调及 Vue 状态回填。
                 await new Promise(resolve => setTimeout(resolve, 350));
@@ -229,9 +238,11 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
             );
             root.addEventListener('mouseleave', () => {
               if (root.dataset.uploaded === 'true') {
-                fetch('/permit/web/permit/submitlice', {method: 'POST'}).then(async () => {
+                fetch('/permit/web/permit/submitlice', {method: 'POST', headers:{'Content-Type':'application/json'},
+                  body: JSON.stringify({upload_file:root.dataset.ids, evidence_url:root.querySelector('input[placeholder]').value})}).then(async () => {
                   await new Promise(resolve => setTimeout(resolve, 350));
                   root.querySelector('.save-status').textContent = '已保存待送审';
+                  if (window.loseFilesOnSave) root.querySelector('.file-count').textContent = '0/9';
                 });
               }
             });
@@ -245,6 +256,18 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
     def serve_page(route) -> None:
         route.fulfill(content_type="text/html; charset=utf-8", body=html)
 
+    from io import BytesIO
+    from PIL import Image
+    png = BytesIO()
+    Image.new('RGB', (2, 2), 'blue').save(png, format='PNG')
+    image_bytes = png.getvalue()
+    upload_calls = []
+    def serve_upload(route):
+        upload_calls.append(1)
+        route.fulfill(status=200, content_type='application/json',
+                      body=json.dumps({'status':0, 'data':f'{len(upload_calls)}.png'}))
+    context.route('**/permit/get?filename=*', lambda route:route.fulfill(content_type='image/png', body=image_bytes))
+
     def serve_submitlice(route) -> None:
         route.fulfill(
             status=200,
@@ -253,14 +276,14 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
         )
 
     context.route("https://fkzhunru.baidu.com/newaudit", serve_page)
-    context.route("**/permit/web/permit/savelicepic", serve_submitlice)
+    context.route("**/permit/web/permit/savelicepic", serve_upload)
     context.route("**/permit/web/permit/submitlice", serve_submitlice)
     page = context.new_page()
     page.goto(page_url, wait_until="domcontentloaded")
     files = []
     for index in range(3):
         path = tmp_path / f"file-{index}.jpg"
-        path.write_bytes(b"image")
+        path.write_bytes(image_bytes)
         files.append(path)
     qualification = Qualification(
         index_name="资质1",
@@ -273,7 +296,7 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
     extra_files = []
     for index in range(2):
         path = tmp_path / f"extra-{index}.jpg"
-        path.write_bytes(b"extra")
+        path.write_bytes(image_bytes)
         extra_files.append(path)
     second_qualification = Qualification(
         index_name="资质2",
@@ -288,10 +311,19 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
     )
     new_page = NewAuditQualificationPage(page, timeout=2_000)
 
+    page.evaluate("value => window.loseFilesOnSave = value", lose_files_on_save)
     new_page.remove_default_extra_businesses()
+    if lose_files_on_save:
+        with pytest.raises(PageFlowError, match="保存后页面文件不完整或未显示"):
+            new_page.upload_type(qualification_type, 1)
+        assert not new_page._saved_uploads
+        assert page.evaluate("window.batchSizes") == [1, 1, 1]
+        context.close()
+        return
     new_page.upload_type(qualification_type, 1)
     new_page.validate_final_collection(((qualification_type, 1),))
 
+    assert page.evaluate("window.batchSizes") == [1, 1, 1, 1, 1]
     assert sorted(new_page._business_tabs()) == [1]
     assert len(new_page._file_inputs(1)) == 2
     assert page.locator(".file-form").evaluate_all(
@@ -916,7 +948,7 @@ def test_new_audit_uploads_only_inside_requested_business(browser, tmp_path: Pat
     assert page.locator("#card-2 input[type='file']").count() == 1
     assert page.locator("#card-2 input[type='file']").evaluate(
         "element => element.files.length"
-    ) == 3
+    ) == 1
     assert page.locator("#card-2 .evidence").evaluate_all(
         "elements => elements.map(element => element.value)"
     ) == ["https://example.test/evidence"]
@@ -1818,10 +1850,10 @@ def test_upload_error_with_existing_preview_does_not_retry(browser, tmp_path):
     file=tmp_path/'proof.png'; file.write_bytes(b'image')
     def validate(response):
         raise PageFlowError('response failed')
-    result=upload_with_retry(page, lambda:page.locator('input').set_input_files(str(file)),
-                             lambda:page.locator('#files img').count(),validate,
-                             description='资质1/proof.png',timeout_ms=500)
-    assert result == []
+    with pytest.raises(PageFlowError, match='缺少完整成功上传凭据'):
+        upload_with_retry(page, lambda:page.locator('input').set_input_files(str(file)),
+                          lambda:page.locator('#files img').count(),validate,
+                          description='资质1/proof.png',timeout_ms=500)
     assert len(calls)==1
     page.close()
 
@@ -1854,3 +1886,141 @@ def test_pending_upload_is_not_retried(browser, tmp_path):
     assert len(routes)==1
     routes[0].abort()
     page.close()
+
+
+@pytest.mark.parametrize("mode", ["missing", "delayed", "partial", "aborted", "no_request"])
+def test_upload_uncertain_results_never_reupload(browser, tmp_path, mode):
+    from src.upload_retry import upload_with_retry
+    page = browser.new_page()
+    calls = []
+    def serve(route):
+        calls.append(1)
+        if mode == "aborted":
+            route.abort()
+        else:
+            route.fulfill(status=503 if mode == "partial" and len(calls) == 2 else 200,
+                          content_type="application/json", body='{"status":0}')
+    page.route("**/permit/web/permit/savelicepic", serve)
+    page.set_content('''<base href="https://fkzhunru.baidu.com/">
+      <input type="file" multiple><div id="files"></div><script>
+      window.mode = MODE;
+      document.querySelector('input').onchange = async event => {
+        if (window.mode === 'no_request') return;
+        for (const file of event.target.files) {
+          await fetch('/permit/web/permit/savelicepic', {method:'POST'}).catch(()=>{});
+        }
+        if (window.mode === 'delayed')
+          setTimeout(()=>document.querySelector('#files').appendChild(document.createElement('img')), 150);
+      };</script>'''.replace('MODE', json.dumps(mode)))
+    file = tmp_path / "proof.png"
+    file.write_bytes(b'image')
+    triggers = []
+    def trigger():
+        triggers.append(1)
+        page.locator('input').evaluate("e=>{e.value=''}")
+        page.locator('input').set_input_files([str(file)] * (2 if mode == "partial" else 1))
+    def validate(response):
+        if response.status != 200:
+            raise PageFlowError('HTTP failure')
+    try:
+        if mode == "delayed":
+            result = upload_with_retry(page, trigger, lambda:page.locator('#files img').count(),
+                                       validate, description='回填', timeout_ms=400)
+            assert len(result) == 1
+        else:
+            with pytest.raises(PageFlowError, match='不重复上传'):
+                upload_with_retry(page, trigger, lambda:page.locator('#files img').count(),
+                                  validate, description='回填', timeout_ms=400,
+                                  file_count=2 if mode == "partial" else 1)
+        assert len(triggers) == 1
+        assert not page._impl_obj.listeners('request')
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("preview_removed", [False, True])
+def test_new_audit_saved_preview_missing_is_rejected(browser, preview_removed):
+    page = browser.new_page()
+    page.set_content('<div class="form-card"><div class="preview-container">'
+                     '<span class="file-count">1/9</span></div></div>')
+    view = NewAuditQualificationPage(page, timeout=300)
+    if preview_removed:
+        page.locator('.preview-container').evaluate('element => element.remove()')
+    with pytest.raises(PageFlowError, match='保存后页面文件不完整或未显示'):
+        view._verify_saved_file_count(page.locator('.form-card'), 2, '资质1', required=True)
+    page.close()
+
+
+def test_new_audit_saved_nested_preview_containers_are_valid(browser):
+    page = browser.new_page()
+    page.set_content('<div class="form-card"><div class="preview-container">'
+                     '<div class="preview-container"><img></div>'
+                     '<div class="preview-container"><img></div>'
+                     '<div class="preview-container"><img></div>'
+                     '<span class="file-count">3/4</span></div></div>')
+    view = NewAuditQualificationPage(page, timeout=300)
+    view._verify_saved_file_count(page.locator('.form-card'), 3, '资质1', required=True)
+    page.close()
+
+
+@pytest.mark.parametrize('mode', ['correct', 'duplicate_id', 'wrong_content', 'unloaded'])
+def test_new_audit_checks_file_identity_and_content(browser, tmp_path, mode):
+    import hashlib
+    from io import BytesIO
+    from PIL import Image
+    from src.upload_identity import UploadReceipt
+    page = browser.new_page()
+    receipts = []
+    images = {}
+    for index, color in enumerate(('red', 'blue', 'green')):
+        buf = BytesIO()
+        Image.new('RGB', (3, 3), color).save(buf, format='PNG')
+        path = tmp_path / f'{index}.png'
+        path.write_bytes(buf.getvalue())
+        images[f'{index}.png'] = buf.getvalue()
+        receipts.append(UploadReceipt(path, hashlib.sha256(buf.getvalue()).hexdigest(), f'{index}.png'))
+    def serve(route):
+        from urllib.parse import parse_qs, urlsplit
+        name = parse_qs(urlsplit(route.request.url).query)['filename'][0]
+        if mode == 'unloaded':
+            route.fulfill(status=404)
+        else:
+            body = images['1.png'] if mode == 'wrong_content' and name == '0.png' else images[name]
+            route.fulfill(content_type='image/png', body=body)
+    page.route('**/file?filename=*', serve)
+    page.route('https://fkzhunru.baidu.com/test', lambda route:route.fulfill(content_type='text/html', body='<div class="form-card"></div>'))
+    page.goto('https://fkzhunru.baidu.com/test')
+    ids = ['1.png', '1.png', '2.png'] if mode == 'duplicate_id' else ['0.png', '1.png', '2.png']
+    page.locator('.form-card').evaluate('''(card, ids) => {
+      card.innerHTML = '<div class="preview-container"><span class="file-count">3/9</span>' +
+        ids.map(id => '<li class="preview-list-li"><img src="/file?filename=' + id + '"></li>').join('') + '</div>';
+    }''', ids)
+    view = NewAuditQualificationPage(page, timeout=1800)
+    try:
+        if mode == 'correct':
+            view._verify_file_receipts(lambda:page.locator('.form-card'), receipts, '资质3', content=True)
+        else:
+            with pytest.raises(PageFlowError, match='身份|内容'):
+                view._verify_file_receipts(lambda:page.locator('.form-card'), receipts, '资质3', content=True)
+    finally:
+        page.close()
+
+
+def test_new_audit_background_page_can_trigger_autosave(browser, monkeypatch):
+    context = browser.new_context()
+    page = context.new_page()
+    page.set_content('''<section style="width:900px;height:500px">
+      <div id="card" style="width:400px;height:200px">资质卡片</div></section>
+      <script>window.savedWithFocus=false;
+      document.querySelector('#card').onmouseleave=()=>{
+        if(document.hasFocus())window.savedWithFocus=true;
+      };</script>''')
+    other = context.new_page()
+    other.bring_to_front()
+    # 模拟 bring_to_front 无法使桌面后台窗口获得 OS 焦点；用真实 CDP 提供焦点。
+    monkeypatch.setattr(page, 'bring_to_front', lambda: None)
+    view = NewAuditQualificationPage(page, timeout=3000)
+    view._click_blank_outside_card(page.locator('#card'), page.locator('section'))
+    assert page.evaluate('document.hasFocus()')
+    assert page.evaluate('window.savedWithFocus')
+    context.close()

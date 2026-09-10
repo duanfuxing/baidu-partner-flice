@@ -11,6 +11,9 @@ from urllib.parse import urlsplit
 
 from .errors import PageFlowError
 from .upload_retry import upload_with_retry
+from .upload_identity import (UploadReceipt, preview_files, verify_file_identities,
+                              verify_preview_content, verify_saved_request,
+                              saved_request_has_files)
 
 LOGGER = logging.getLogger(__name__)
 from .models import CompanyInput, Qualification, QualificationType
@@ -116,7 +119,10 @@ class NewAuditQualificationPage:
         self.timeout = timeout
         self._scope_sequence = 0
         self._saved_uploads: dict[tuple[int, int], tuple[Path, ...]] = {}
+        self._preview_cards: set[tuple[int, int]] = set()
+        self._saved_file_receipts: dict[tuple[int, int], tuple[UploadReceipt, ...]] = {}
         self._saved_evidence: dict[tuple[int, int], str] = {}
+        self._save_focus_session = None
 
     @staticmethod
     def _visible(locator):
@@ -839,6 +845,18 @@ class NewAuditQualificationPage:
         """点击业务卡内、资质卡外的非交互空白区域。"""
 
         self.page.bring_to_front()
+        # Chromium 的 bring_to_front 只切换标签；桌面应用在前台时，
+        # document.hasFocus() 仍可能为 false，使站点的 mouseleave 保存失效。
+        # 仅为 worker 的独立页面启用焦点模拟，随浏览器上下文关闭而释放。
+        if not self.page.evaluate("document.hasFocus()"):
+            try:
+                if self._save_focus_session is None:
+                    self._save_focus_session = self.page.context.new_cdp_session(self.page)
+                self._save_focus_session.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            except Exception:
+                raise PageFlowError("无法取得资质页面焦点，未触发自动保存") from None
+            if not self.page.evaluate("document.hasFocus()"):
+                raise PageFlowError("资质页面仍无焦点，未触发自动保存")
         card.hover(timeout=self.timeout)
         card_box = card.bounding_box()
         business_box = business_container.bounding_box()
@@ -903,12 +921,54 @@ class NewAuditQualificationPage:
             )
             return
 
-        # 本地页面夹具没有百度预览组件；仅以原生 input 文件数作为兼容检查。
+        # 兼容页面没有百度预览组件时，仅核对本次选择；累计数量不能
+        # 从 input.files 推断（逐张上传后它仅包含最后一张）。
         file_input = card.locator('input[type="file"]').first
         self._wait_until(
-            lambda: file_input.evaluate("element => element.files.length") == expected_count,
+            lambda: file_input.evaluate("element => element.files.length") == 1,
             f"等待资质“{qualification_name}”文件选择状态超时",
         )
+
+    def _verify_saved_file_count(self, card, expected_count: int, name: str,
+                                 *, required: bool = False) -> None:
+        """保存刷新后重新读取预览；本地兼容页面无预览时使用已有保存凭据。"""
+        if not required and not card.locator(".preview-container").count():
+            return
+        try:
+            self._wait_until(lambda: card.locator(".preview-container").count() > 0,
+                             "等待保存后的文件预览区域超时")
+            self._wait_for_uploaded_file_state(card, expected_count, name)
+        except PageFlowError as exc:
+            raise PageFlowError(
+                f"资质“{name}”保存后页面文件不完整或未显示，期望 {expected_count} 个，"
+                "停止，不重复上传或发起审核"
+            ) from exc
+
+    def _verify_file_receipts(self, card_getter, receipts, name, *, content=False):
+        verify_file_identities(receipts, [r.server_id for r in receipts], description=name)
+        stable_since = None
+
+        def ready():
+            nonlocal stable_since
+            files = preview_files(card_getter())
+            try:
+                verify_file_identities(receipts, [item['id'] for item in files], description=name)
+                matches = all(item['ready'] for item in files)
+            except PageFlowError:
+                matches = False
+            if not matches:
+                stable_since = None
+                return False
+            if stable_since is None:
+                stable_since = time.monotonic()
+            # 给异步 change/success/父组件回填留出稳定时间；也避免同秒紧邻上传。
+            return time.monotonic() - stable_since >= 1.1
+
+        self._wait_until(ready, f'资质“{name}”文件身份或图片加载不一致，停止，不重复上传')
+        if content:
+            verify_preview_content(self.page, receipts, preview_files(card_getter()), self.timeout)
+            verify_file_identities(receipts, [item['id'] for item in preview_files(card_getter())],
+                                   description=f'资质“{name}”内容核验后')
 
     def _wait_for_card_save_settle(
         self,
@@ -980,7 +1040,7 @@ class NewAuditQualificationPage:
         self._discard_empty_initial_supplements(container_getter)
         for index, qualification in enumerate(qualifications):
             LOGGER.info("业务[%s] 资质[%s]：准备第 %s 张卡片，共 %s 个文件", qualification_type.type_name, qualification.index_name, index + 1, len(qualification.files))
-            # 一个资质目录对应一张卡片，目录内最多9个文件一次上传；
+            # 一个资质目录对应一张卡片，目录内文件逐个上传并等待回填；
             # 只有下一个资质目录才创建补充资质卡片。
             try:
                 self._ensure_upload_form_count_in(container_getter, index + 1)
@@ -1004,6 +1064,7 @@ class NewAuditQualificationPage:
                 preview = card.locator(".preview-container")
                 if not preview.count():
                     return None
+                self._preview_cards.add((business_key, index))
                 counts = [int(match.group(1))
                           for item in self._visible(preview.locator(".file-count"))
                           if (match := re.fullmatch(r"\s*(\d+)\s*/\s*\d+\s*", item.inner_text()))]
@@ -1013,8 +1074,10 @@ class NewAuditQualificationPage:
                     return 0
                 return None
 
-            multiple = inputs[index].get_attribute("multiple") is not None
-            batches = [paths] if multiple else [(path,) for path in paths]
+            batches = [(path,) for path in paths]
+            receipts = []
+            # 鼠标进入当前卡片，取消页面尚未执行的 mouseleave 自动保存。
+            current_card().hover(timeout=self.timeout)
             uploaded_total = 0
             for batch in batches:
                 description = f"业务[{qualification_type.type_name}] 资质[{qualification.index_name}] 文件[{', '.join(path.name for path in batch)}]"
@@ -1025,13 +1088,17 @@ class NewAuditQualificationPage:
                     current_input.evaluate("element => { element.value = ''; }")
                     current_input.set_input_files([str(path) for path in batch])
 
-                upload_with_retry(
+                responses = upload_with_retry(
                     self.page, trigger, uploaded_count,
                     lambda response: self._submitlice_response(response, "文件上传"),
                     description=description, timeout_ms=self.timeout, file_count=len(batch),
                 )
                 uploaded_total += len(batch)
                 self._wait_for_uploaded_file_state(current_card(), uploaded_total, qualification.index_name)
+                if (business_key, index) in self._preview_cards:
+                    receipts.append(UploadReceipt.from_response(batch[0], responses[0]))
+                    self._verify_file_receipts(current_card, receipts, qualification.index_name)
+                    LOGGER.info('%s：源文件 SHA-256 %s，文件身份及预览已稳定', description, receipts[-1].sha256[:12])
 
             current_inputs = self._file_inputs_in(container_getter())
             card = self._upload_container(current_inputs[index])
@@ -1048,7 +1115,8 @@ class NewAuditQualificationPage:
             LOGGER.info("业务[%s] 资质[%s]：触发自动保存并等待 submitlice", qualification_type.type_name, qualification.index_name)
             try:
                 with self.page.expect_response(
-                    lambda response: is_permit_post_response(response, SUBMITLICE_PATH),
+                    lambda response: (is_permit_post_response(response, SUBMITLICE_PATH)
+                                      and (not receipts or saved_request_has_files(response, receipts))),
                     timeout=self.timeout,
                 ) as response_info:
                     self._click_blank_outside_card(card, container_getter())
@@ -1057,9 +1125,16 @@ class NewAuditQualificationPage:
                     f"等待资质卡片自动保存超时：{qualification.index_name}"
                 ) from exc
             self._submitlice_response(response_info.value, qualification.index_name)
+            if receipts:
+                verify_saved_request(response_info.value, receipts, evidence)
             self._wait_for_card_save_settle(
                 container_getter, index, qualification.index_name
             )
+            self._verify_saved_file_count(current_card(), len(paths), qualification.index_name,
+                                         required=(business_key, index) in self._preview_cards)
+            if receipts:
+                self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
+                self._saved_file_receipts[(business_key, index)] = tuple(receipts)
             LOGGER.info("业务[%s] 资质[%s]：自动保存成功，页面已稳定", qualification_type.type_name, qualification.index_name)
             self._saved_uploads[(business_key, index)] = paths
             evidence = qualification.evidence_url or ""
@@ -1107,6 +1182,11 @@ class NewAuditQualificationPage:
                 evidence = qualification.evidence_url or ""
                 expected_evidence[key] = evidence
                 upload_container = self._upload_container(inputs[index])
+                self._verify_saved_file_count(upload_container, len(qualification.files), qualification.index_name,
+                                             required=key in self._preview_cards)
+                if key in self._saved_file_receipts:
+                    self._verify_file_receipts(lambda: self._upload_container(self._file_inputs(business_index)[index]),
+                                               self._saved_file_receipts[key], qualification.index_name, content=True)
                 evidence_input = self._unique_visible(
                     upload_container.locator('input:not([type="file"])'),
                     f"最终业务{business_index}第{index + 1}张文件的举证链接输入框",
@@ -1148,6 +1228,11 @@ class NewAuditQualificationPage:
                     f"编辑业务举证保存记录不一致：{qualification.index_name}"
                 )
             upload_container = self._upload_container(inputs[index])
+            self._verify_saved_file_count(upload_container, len(qualification.files), qualification.index_name,
+                                         required=key in self._preview_cards)
+            if key in self._saved_file_receipts:
+                self._verify_file_receipts(lambda: self._upload_container(self._file_inputs_in(container)[index]),
+                                           self._saved_file_receipts[key], qualification.index_name, content=True)
             evidence_input = self._unique_visible(
                 upload_container.locator('input:not([type="file"])'),
                 f"编辑业务第{index + 1}张文件的举证链接输入框",
@@ -1184,6 +1269,8 @@ class NewAuditQualificationPage:
             self._validate_uploaded_scope(types[0], 0, self.page)
             self._return_from_promotion_edit()
             self._saved_uploads.clear()
+            self._saved_file_receipts.clear()
+            self._preview_cards.clear()
             self._saved_evidence.clear()
             self.enter_add_business_page(allow_resume=False)
             LOGGER.info("清理新增页面默认业务")
