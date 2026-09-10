@@ -6,4 +6,4 @@
 - 回归：运行完整pytest、git diff --check；四个平台CI测试、应用自检和打包。
 - 手工：任务43已重新打开目标卡验证3份原始文件哈希一致，无最终送审。
 
-结果：本机macOS完整pytest通过；版本一致性与git diff --check通过。四平台CI构建待执行。
+结果：本机macOS全部228项pytest通过；版本一致性与git diff --check通过。四平台CI测试、自检及构建全部成功；发布页4个安装包均上传成功。

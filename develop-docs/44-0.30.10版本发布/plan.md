@@ -16,4 +16,8 @@
 不提交输入文件和认证信息，不执行真实最终审核，不宣称已修复任务42中的其他举证链接问题。
 
 ## 验收结果
-本机macOS完整pytest通过，git diff --check通过；版本一致性测试通过。准备推送并构建。Windows真实业务页面验收、安装包系统安装验收尚未执行。
+本机macOS全部228项pytest通过，git diff --check通过；版本一致性测试通过。发布提交e81909a及v0.30.10已推送。四个平台的CI测试、应用自检、安装器生成和上传全部通过，Release已公开发布，4个非空安装包状态均为uploaded。Windows真实业务页面验收、安装包系统安装验收尚未执行。
+
+构建：https://github.com/duanfuxing/baidu-partner-flice/actions/runs/34441651581
+
+安装包：https://github.com/duanfuxing/baidu-partner-flice/releases/tag/v0.30.10
