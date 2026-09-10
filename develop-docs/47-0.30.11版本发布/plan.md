@@ -8,4 +8,8 @@
 不在范围内：修改输入/登录状态、真实最终审核、覆盖旧版本标签。
 测试依据：此前250项全量回归通过，复查修复后46项针对性回归通过；版本检查及四平台完整CI待执行。
 限制：最新代码真实业务页面验收受登录状态失效阻断；不将本地页面测试视为真实业务验收。
-结果：进行中。
+结果：发布提交c182560及v0.30.11标签已推送；四平台完整测试、应用自检、安装器构建与Release全部成功，4个非空附件均为uploaded。
+
+构建：https://github.com/duanfuxing/baidu-partner-flice/actions/runs/34456639919
+
+下载：https://github.com/duanfuxing/baidu-partner-flice/releases/tag/v0.30.11
