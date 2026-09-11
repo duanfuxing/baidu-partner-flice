@@ -972,7 +972,7 @@ class NewAuditQualificationPage:
 
     def _remove_failed_upload(self, card_getter, receipts, responses, path, name,
                               request_guard=None):
-        """只删除本次串行上传新增的唯一条目，原有成功文件必须完整。"""
+        """清理唯一失败项；原列表稳定但成功条目缺失时返回 True，交调用方限一次补传。"""
         expected = [item.server_id for item in receipts]
         files = preview_files(card_getter())
         ids = [item['id'] for item in files]
@@ -982,7 +982,9 @@ class NewAuditQualificationPage:
             verify_preview_content(self.page, receipts, files[:len(expected)], self.timeout)
         if len(ids) == len(expected):
             if responses:
-                raise PageFlowError(f'资质“{name}”上传成功但条目未出现，无法确认可安全重传')
+                receipt = UploadReceipt.from_response(path, responses[0])
+                if receipt.server_id in expected:
+                    raise PageFlowError(f'资质“{name}”缺失文件返回原有文件标识，停止补传')
         else:
             if responses:
                 receipt = UploadReceipt.from_response(path, responses[0])
@@ -1005,6 +1007,9 @@ class NewAuditQualificationPage:
             button.click(timeout=self.timeout)
             LOGGER.info('文件[%s]：已点击失败条目的删除按钮，核对剩余文件', path.name)
         self._verify_file_receipts(card_getter, receipts, name, content=True)
+        if request_guard is not None:
+            request_guard()
+        return bool(responses) and len(ids) == len(expected)
 
     def _wait_for_card_save_settle(
         self,

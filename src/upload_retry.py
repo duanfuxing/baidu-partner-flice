@@ -34,6 +34,7 @@ def upload_with_retry(page, trigger, uploaded_count, validate, *, description, t
                       file_count=1, verify_success=None, cleanup_failed=None):
     """成功响应与预览分别核验；重试前必须恢复已验证的文件集合。"""
     baseline = uploaded_count()
+    missing_retried = False
     for attempt in range(MAX_UPLOAD_RETRIES + 1):
         requests, pending, responses = set(), set(), []
         failed_requests = set()
@@ -66,6 +67,8 @@ def upload_with_retry(page, trigger, uploaded_count, validate, *, description, t
         failure = "等待上传接口超时"
         valid = []
         try:
+            if missing_retried and (uploaded_count() != baseline or requests):
+                raise PageFlowError(f'{description}：补传前出现迟到回填或新的上传请求，停止追加')
             try:
                 trigger()
                 deadline = time.monotonic() + timeout_ms / 1000
@@ -122,15 +125,23 @@ def upload_with_retry(page, trigger, uploaded_count, validate, *, description, t
                     # 清理失败会直接抛错，不能带着未确认的页面再次上传。
                     ensure_settled()
                     try:
-                        cleanup_failed(valid, ensure_settled)
+                        missing = cleanup_failed(valid, ensure_settled)
                     except PageFlowError as exc:
                         raise PageFlowError(f'{description}：{failure}；清理未完成：{exc}') from exc
                     ensure_settled()
                     if uploaded_count() != baseline:
                         raise PageFlowError(f'{description}：删除失败项后文件数未恢复，停止')
+                    ensure_settled()
+                    if missing:
+                        if missing_retried:
+                            raise PageFlowError(f'{description}：已补传一次但文件条目仍未出现，停止当前公司')
+                        missing_retried = True
                     if attempt == MAX_UPLOAD_RETRIES:
                         raise PageFlowError(f'{description}：{failure}，已重试 {MAX_UPLOAD_RETRIES} 次，停止当前公司')
-                    LOGGER.warning('%s：%s；失败项已清理，准备重新上传', description, failure)
+                    if missing:
+                        LOGGER.warning('%s：上传成功但未找到新增条目；原有文件已核验，额外补传一次', description)
+                    else:
+                        LOGGER.warning('%s：%s；失败项已清理，准备重新上传', description, failure)
                     continue
             if baseline is not None and current == baseline + file_count:
                 if pending:
