@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from .errors import PageFlowError
 from .upload_retry import upload_with_retry
 from .upload_identity import (UploadReceipt, preview_files, verify_file_identities,
@@ -303,12 +305,18 @@ class NewAuditQualificationPage:
     def _business_tabs(self) -> dict[int, object]:
         tabs = self.page.get_by_text(re.compile(r"^业务\d+$"), exact=True)
         result: dict[int, object] = {}
-        for locator in self._visible(tabs):
-            match = re.fullmatch(r"业务(\d+)", locator.inner_text().strip())
+        # 一次快照只提取名称，不保存全局正则的 nth 位置。
+        # 切换业务时同名卡片标题会增减，导致旧 nth 消失或指向另一业务。
+        names = tabs.and_(self.page.locator(":visible")).all_text_contents()
+        for name in names:
+            match = re.fullmatch(r"业务(\d+)", name.strip())
             if match:
                 # 同一文案可能同时出现在顶部标签和当前卡片标题；DOM 中
-                # 顶部标签在前，保留首个定位器才能访问标签右侧关闭入口。
-                result.setdefault(int(match.group(1)), locator)
+                # 顶部标签在前；每次使用时重新匹配此业务的首个可见项。
+                index = int(match.group(1))
+                result.setdefault(index, self.page.get_by_text(
+                    f"业务{index}", exact=True,
+                ).and_(self.page.locator(":visible")).first)
         return result
 
     def _click_business_tab(self, index: int) -> None:
@@ -316,7 +324,10 @@ class NewAuditQualificationPage:
         tabs = self._business_tabs()
         if index not in tabs:
             raise PageFlowError(f"找不到业务{index}标签")
-        tabs[index].click(timeout=self.timeout)
+        try:
+            tabs[index].click(timeout=self.timeout)
+        except PlaywrightTimeoutError:
+            raise PageFlowError(f'业务{index}标签未出现或不可点击，停止，不切换其他业务') from None
         self._wait_until(
             lambda: self._business_container(index) is not None,
             f"业务{index}卡片未显示",
