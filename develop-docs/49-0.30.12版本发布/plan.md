@@ -8,4 +8,8 @@
 不在范围内：输入修改、登录状态清理、真实上传保存及最终审核；不覆盖已有标签。
 测试依据：任务48的32项针对性回归通过；版本一致性检查及完整CI待执行。
 限制：最新修复尚未执行Windows真实业务页面验收。
-结果：发布中。
+结果：发布提交c231863及v0.30.12标签已推送。四平台完整CI测试、自检、打包与Release成功；4个非空附件均为uploaded，发布页非草稿。
+
+构建：https://github.com/duanfuxing/baidu-partner-flice/actions/runs/34553639951
+
+下载：https://github.com/duanfuxing/baidu-partner-flice/releases/tag/v0.30.12
