@@ -200,11 +200,27 @@ class BrowserSession:
             self.context.set_default_timeout(self.config.timeout_ms)
             return self
         except Exception:
+            self._pause_before_error_close()
             self.close()
             raise
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if exc_type is not None:
+            self._pause_before_error_close()
         self.close()
+
+    def _pause_before_error_close(self) -> None:
+        """有可见页面的错误退出保留5秒，供人工观察，不改变原始异常。"""
+        try:
+            if (self.config.headless or self.browser is None
+                    or not self.browser.is_connected() or self.context is None
+                    or not any(not page.is_closed() for page in self.context.pages)):
+                return
+            LOGGER.error('发生错误，保留当前页面5秒后关闭浏览器，请查看页面提示')
+            time.sleep(5)
+        except Exception:
+            # 页面已关闭或连接失效时继续原有资源清理。
+            pass
 
     def close(self) -> None:
         if self.context is not None:

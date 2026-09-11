@@ -934,6 +934,7 @@ class NewAuditQualificationPage:
                     self._submitlice_response(response, name)
                     if receipts:
                         verify_saved_request(response, receipts, evidence)
+                    LOGGER.info('资质[%s]：保存接口成功（HTTP 200，status=0），开始核对页面回填', name)
                     return response
                 if save_handle.evaluate('element => element.__bpfSaveFailed === true'):
                     raise PageFlowError(f'资质[{name}]页面保存方法执行失败，未上传下一个文件')
@@ -1139,44 +1140,91 @@ class NewAuditQualificationPage:
         container_getter,
         card_index: int,
         qualification_name: str,
+        *,
+        receipts=(),
+        evidence: str = "",
     ) -> None:
-        """等待 submitlice 成功回调及父级异步刷新稳定后再操作下一卡片。"""
+        """仅在保存响应通过校验后调用，等待当前卡片数据持续一致。"""
 
         def current_card():
-            inputs = self._file_inputs_in(container_getter())
+            container = container_getter()
+            if container is None:
+                return None
+            inputs = self._file_inputs_in(container)
             if len(inputs) <= card_index:
                 return None
             return self._upload_container(inputs[card_index])
 
-        card = current_card()
-        if card is None or not card.get_by_text("资质状态", exact=True).count():
-            return
-
         stable_since: float | None = None
+        last_log = 0.0
+        reason = "尚未读取当前卡片"
+        status_visible = False
 
         def settled() -> bool:
-            nonlocal stable_since
-            card_now = current_card()
-            ready = bool(
-                card_now
-                and self._visible(
-                    card_now.get_by_text("已保存待送审", exact=True)
-                )
-                and not self._visible(
-                    container_getter().locator(".el-loading-mask")
-                )
-            )
-            if not ready:
+            nonlocal stable_since, last_log, reason, status_visible
+            issues = []
+            try:
+                card = current_card()
+                if card is None:
+                    issues.append("当前资质卡片未出现")
+                else:
+                    # 相邻资质卡的独立 loading 与本次保存无关；祖先的遮罩
+                    # 会阻挡当前卡片，包含挂在 body 的全屏 loading，仍须等待。
+                    loading = card.evaluate("""element => {
+                      const masks = new Set(element.querySelectorAll('.el-loading-mask'));
+                      for (let p = element.parentElement; p; p = p.parentElement) {
+                        for (const child of p.children)
+                          if (child.matches('.el-loading-mask')) masks.add(child);
+                      }
+                      return [...masks].some(mask => {
+                        const style = getComputedStyle(mask), rect = mask.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.visibility !== 'collapse'
+                          && rect.width > 0 && rect.height > 0;
+                      });
+                    }""")
+                    if loading:
+                        issues.append("当前卡片或父级加载遮罩仍可见")
+                    status_visible = bool(self._visible(
+                        card.get_by_text("已保存待送审", exact=True)
+                    ))
+                    if receipts:
+                        files = preview_files(card)
+                        if [item['id'] for item in files] != [r.server_id for r in receipts]:
+                            issues.append(f"文件身份未一致（期望{len(receipts)}个，页面{len(files)}个）")
+                        elif not all(item['ready'] for item in files):
+                            issues.append("当前卡片图片未加载完成")
+                        fields = self._visible(card.locator('input:not([type="file"])'))
+                        if len(fields) != 1 or fields[0].input_value().strip() != evidence:
+                            issues.append("举证链接尚未与本次保存一致")
+                    elif card.get_by_text("资质状态", exact=True).count() and not status_visible:
+                        # 无文件身份凭据的兼容页面不能仅凭输入框有文件放行。
+                        issues.append("未显示已保存待送审，且无文件身份凭据")
+            except Exception as exc:
+                # DOM 重建窗口继续等待，只记录异常类型，不输出动态 URL/表单值。
+                issues.append(f"读取当前卡片遇到{type(exc).__name__}")
+            if issues:
                 stable_since = None
+                reason = "；".join(issues)
+                now = time.monotonic()
+                if now - last_log >= 10:
+                    LOGGER.info('资质[%s]：保存后等待页面回填：%s', qualification_name, reason)
+                    last_log = now
                 return False
             if stable_since is None:
                 stable_since = time.monotonic()
+            reason = "文件和表单已匹配，等待连续稳定1秒"
             return time.monotonic() - stable_since >= 1.0
 
-        self._wait_until(
-            settled,
-            f"等待资质“{qualification_name}”保存后页面刷新稳定超时",
-        )
+        try:
+            self._wait_until(
+                settled,
+                f"等待资质“{qualification_name}”保存后页面刷新稳定超时",
+            )
+        except PageFlowError as exc:
+            raise PageFlowError(f"{exc}：{reason}；未重复上传或保存") from exc
+        if receipts and not status_visible:
+            LOGGER.info('资质[%s]：保存响应及文件、举证已核验，页面状态文案尚未同步', qualification_name)
+        LOGGER.info('资质[%s]：保存后当前卡片已稳定', qualification_name)
 
     def upload_type(self, qualification_type: QualificationType, business_index: int) -> None:
         self._click_business_tab(business_index)
@@ -1286,7 +1334,8 @@ class NewAuditQualificationPage:
                     current_card, container_getter, evidence, receipts, qualification.index_name,
                 )
                 self._wait_for_card_save_settle(
-                    container_getter, index, qualification.index_name
+                    container_getter, index, qualification.index_name,
+                    receipts=receipts, evidence=evidence,
                 )
                 self._verify_saved_file_count(current_card(), uploaded_total, qualification.index_name,
                                              required=(business_key, index) in self._preview_cards)
