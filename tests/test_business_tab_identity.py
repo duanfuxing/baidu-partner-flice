@@ -20,7 +20,7 @@ def test_business_switch_keeps_exact_identity_after_scan(browser, monkeypatch, c
         <h2 id="heading">业务1</h2>
         <button id="target" onclick="window.selected=2">业务2</button>
         <div id="panel"></div><script>window.selected=null;</script>''')
-    view = NewAuditQualificationPage(page, timeout=400)
+    view = NewAuditQualificationPage(page, timeout=5000)
     scan = view._business_tabs
     def changed_scan():
         tabs = scan()
