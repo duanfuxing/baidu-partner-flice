@@ -841,6 +841,112 @@ class NewAuditQualificationPage:
             raise PageFlowError("上传控件找不到对应举证链接区域")
         return container
 
+    def _scroll_upload_to_bottom(self, card) -> None:
+        """滚动页面及卡片的可滚动祖先到底部，再保证当前卡片可操作。"""
+        card.evaluate("""element => {
+          for (let p = element.parentElement; p; p = p.parentElement) {
+            if (p.scrollHeight > p.clientHeight &&
+                /auto|scroll/.test(getComputedStyle(p).overflowY))
+              p.scrollTop = p.scrollHeight;
+          }
+          const root = document.scrollingElement;
+          if (root) root.scrollTop = root.scrollHeight;
+        }""")
+
+    def _invoke_card_save(self, card):
+        """调用当前卡片组件显式暴露的 handleSubmit，不调用父页面提交。"""
+        handle = card.element_handle(timeout=self.timeout)
+        if handle is None:
+            raise PageFlowError('当前资质卡片已消失，未调用保存方法')
+        started = handle.evaluate("""element => {
+          const candidates = new Set();
+          const consider = c => {
+            const root = c?.subTree?.el;
+            const ownsCard = root === element || (
+              root?.classList?.contains('drag-upload-wrapper') &&
+              root.querySelectorAll('.form-card').length === 1 &&
+              root.querySelector('.form-card') === element
+            );
+            if (ownsCard && typeof c.exposed?.handleSubmit === 'function')
+              candidates.add(c.exposed);
+          };
+          // 开发模式可从DOM找到组件；生产构建只保留应用根节点的VNode树。
+          for (let c = element.__vueParentComponent; c; c = c.parent) consider(c);
+          let appRoot = element;
+          while (appRoot && !appRoot._vnode) appRoot = appRoot.parentElement;
+          const seen = new Set();
+          const walk = v => {
+            if (!v || typeof v !== 'object' || seen.has(v)) return;
+            seen.add(v);
+            if (v.component) { consider(v.component); walk(v.component.subTree); }
+            if (Array.isArray(v.children)) v.children.forEach(walk);
+            if (v.suspense) walk(v.suspense.activeBranch);
+          };
+          walk(appRoot?._vnode);
+          if (candidates.size !== 1) return false;
+          const api = [...candidates][0];
+          element.__bpfSaveFailed = false;
+          try {
+            Promise.resolve(api.handleSubmit()).catch(() => { element.__bpfSaveFailed = true; });
+          } catch (_) { element.__bpfSaveFailed = true; }
+          return true;
+        }""")
+        if not started:
+            handle.dispose()
+            raise PageFlowError('找不到当前资质卡片唯一的页面保存方法 handleSubmit，未调用其他提交入口')
+        return handle
+
+    def _save_qualification_card(self, card_getter, container_getter, evidence, receipts, name):
+        responses = []
+        requests = []
+
+        def on_request(request):
+            parsed = urlsplit(request.url)
+            if (parsed.scheme == 'https' and parsed.hostname == PERMIT_HOST
+                    and parsed.path == SUBMITLICE_PATH and request.method == 'POST'):
+                requests.append(request)
+
+        def on_response(response):
+            if (is_permit_post_response(response, SUBMITLICE_PATH)
+                    and (not receipts or saved_request_has_files(response, receipts))):
+                responses.append(response)
+
+        # 填写、滚动和失焦均可能触发保存，必须先监听。
+        save_handle = None
+        self.page.on('request', on_request)
+        self.page.on('response', on_response)
+        try:
+            card = card_getter()
+            self._scroll_upload_to_bottom(card)
+            field = self._unique_visible(card.locator('input:not([type="file"])'),
+                                         f'资质[{name}]的举证链接输入框')
+            if field.input_value().strip() != evidence:
+                field.click(timeout=self.timeout)
+                field.fill(evidence)
+            deadline = time.monotonic() + self.timeout / 1000
+            # 保持鼠标在卡片内，取消页面 pending mouseleave 保存定时器。
+            card_getter().hover(timeout=self.timeout)
+            LOGGER.info('资质[%s]：调用当前卡片 handleSubmit 保存', name)
+            save_handle = self._invoke_card_save(card_getter())
+            while time.monotonic() < deadline:
+                if responses:
+                    response = responses[0]
+                    self._submitlice_response(response, name)
+                    if receipts:
+                        verify_saved_request(response, receipts, evidence)
+                    return response
+                if save_handle.evaluate('element => element.__bpfSaveFailed === true'):
+                    raise PageFlowError(f'资质[{name}]页面保存方法执行失败，未上传下一个文件')
+                self.page.wait_for_timeout(100)
+            if requests:
+                raise PageFlowError(f'资质[{name}]已发出保存请求，但未收到匹配的保存响应，未重复提交')
+            raise PageFlowError(f'资质[{name}]已调用页面保存方法，但未发出保存请求，请检查页面校验提示')
+        finally:
+            self.page.remove_listener('request', on_request)
+            self.page.remove_listener('response', on_response)
+            if save_handle is not None:
+                save_handle.dispose()
+
     def _click_outside_qualification_card(self) -> None:
         for locator in (
             self.page.get_by_text("URL信息", exact=True),
@@ -873,7 +979,12 @@ class NewAuditQualificationPage:
         business_box = business_container.bounding_box()
         if not card_box or not business_box:
             raise PageFlowError("无法计算资质卡片外的安全空白区域")
+        viewport = self.page.evaluate('({width: innerWidth, height: innerHeight})')
+        visible_y = max(12, min(viewport['height'] - 12,
+                               card_box['y'] + card_box['height'] / 2))
         candidates = (
+            (min(viewport['width'] - 12, business_box['x'] + business_box['width'] - 12), visible_y),
+            (max(12, business_box['x'] + 12), visible_y),
             (
                 business_box["x"] + business_box["width"] - 12,
                 card_box["y"] + min(30, card_box["height"] / 2),
@@ -897,7 +1008,8 @@ class NewAuditQualificationPage:
             safe = self.page.evaluate(
                 """({x, y}) => {
                   const element = document.elementFromPoint(x, y);
-                  return !!element && !element.closest(
+                  return x >= 0 && y >= 0 && x < innerWidth && y < innerHeight
+                    && !!element && !element.closest(
                     'a,button,input,textarea,select,[role="button"],[role="checkbox"]'
                   );
                 }""",
@@ -1129,12 +1241,15 @@ class NewAuditQualificationPage:
             batches = [(path,) for path in paths]
             receipts = []
             # 鼠标进入当前卡片，取消页面尚未执行的 mouseleave 自动保存。
+            self._scroll_upload_to_bottom(current_card())
             current_card().hover(timeout=self.timeout)
             uploaded_total = 0
             for batch in batches:
                 description = f"业务[{qualification_type.type_name}] 资质[{qualification.index_name}] 文件[{', '.join(path.name for path in batch)}]"
 
                 def trigger():
+                    self._scroll_upload_to_bottom(current_card())
+                    current_card().hover(timeout=self.timeout)
                     current_input = self._file_inputs_in(container_getter())[index]
                     # 清空原生选择值使相同文件可再次触发 change，不删除已上传预览。
                     current_input.evaluate("element => { element.value = ''; }")
@@ -1165,38 +1280,19 @@ class NewAuditQualificationPage:
                     self._verify_file_receipts(current_card, receipts, qualification.index_name)
                     LOGGER.info('%s：源文件 SHA-256 %s，文件身份及预览已稳定', description, receipts[-1].sha256[:12])
 
-            current_inputs = self._file_inputs_in(container_getter())
-            card = self._upload_container(current_inputs[index])
-            evidence = qualification.evidence_url or ""
-            LOGGER.info("业务[%s] 资质[%s]：%s举证链接", qualification_type.type_name, qualification.index_name, "填写" if evidence else "清空/不填写")
-            evidence_input = self._unique_visible(
-                card.locator('input:not([type="file"])'),
-                f"第{index + 1}个资质卡片的举证链接输入框",
-            )
-            if evidence_input.input_value().strip() != evidence:
-                evidence_input.click(timeout=self.timeout)
-                evidence_input.fill(evidence)
-            self.page.wait_for_timeout(300)
-            LOGGER.info("业务[%s] 资质[%s]：触发自动保存并等待 submitlice", qualification_type.type_name, qualification.index_name)
-            try:
-                with self.page.expect_response(
-                    lambda response: (is_permit_post_response(response, SUBMITLICE_PATH)
-                                      and (not receipts or saved_request_has_files(response, receipts))),
-                    timeout=self.timeout,
-                ) as response_info:
-                    self._click_blank_outside_card(card, container_getter())
-            except Exception as exc:
-                raise PageFlowError(
-                    f"等待资质卡片自动保存超时：{qualification.index_name}"
-                ) from exc
-            self._submitlice_response(response_info.value, qualification.index_name)
-            if receipts:
-                verify_saved_request(response_info.value, receipts, evidence)
-            self._wait_for_card_save_settle(
-                container_getter, index, qualification.index_name
-            )
-            self._verify_saved_file_count(current_card(), len(paths), qualification.index_name,
-                                         required=(business_key, index) in self._preview_cards)
+                evidence = qualification.evidence_url or ""
+                LOGGER.info("业务[%s] 资质[%s]：%s举证链接", qualification_type.type_name, qualification.index_name, "填写" if evidence else "清空/不填写")
+                self._save_qualification_card(
+                    current_card, container_getter, evidence, receipts, qualification.index_name,
+                )
+                self._wait_for_card_save_settle(
+                    container_getter, index, qualification.index_name
+                )
+                self._verify_saved_file_count(current_card(), uploaded_total, qualification.index_name,
+                                             required=(business_key, index) in self._preview_cards)
+                if receipts:
+                    self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
+                LOGGER.info('%s：逐文件保存成功，累计 %s 个文件', description, uploaded_total)
             if receipts:
                 self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
                 self._saved_file_receipts[(business_key, index)] = tuple(receipts)

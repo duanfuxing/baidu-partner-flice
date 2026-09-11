@@ -29,6 +29,22 @@ def browser():
         instance.close()
 
 
+@pytest.fixture(autouse=True)
+def expose_legacy_fixture_save_handler(monkeypatch):
+    # 旧HTML夹具用mouseleave承载模拟保存逻辑；暴露同一逻辑，供逐文件方法调用回归。
+    # 真正的方法定位及不触发mouseleave由test_card_autosave独立覆盖。
+    original = NewAuditQualificationPage._invoke_card_save
+    def invoke(view, card):
+        card.evaluate("""element => {
+          if (element.__vueParentComponent?.exposed?.handleSubmit) return;
+          element.__vueParentComponent = {subTree:{el:element}, exposed:{
+            handleSubmit:()=>element.dispatchEvent(new MouseEvent('mouseleave'))
+          }};
+        }""")
+        return original(view, card)
+    monkeypatch.setattr(NewAuditQualificationPage, '_invoke_card_save', invoke)
+
+
 def test_pending_review_url_opens_industry_qualification(browser) -> None:
     target_url = "https://qianhu.wejianzhan.com/2024-09-06heh2"
     page = browser.new_page()
@@ -238,6 +254,10 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
             );
             root.addEventListener('mouseleave', () => {
               if (root.dataset.uploaded === 'true') {
+                // 与真实组件一样：未变化的表单不重复保存。
+                const snapshot = root.dataset.ids + '|' + root.querySelector('input[placeholder]').value;
+                if (root.dataset.savedSnapshot === snapshot) return;
+                root.dataset.savedSnapshot = snapshot;
                 fetch('/permit/web/permit/submitlice', {method: 'POST', headers:{'Content-Type':'application/json'},
                   body: JSON.stringify({upload_file:root.dataset.ids, evidence_url:root.querySelector('input[placeholder]').value})}).then(async () => {
                   await new Promise(resolve => setTimeout(resolve, 350));
@@ -268,7 +288,9 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
                       body=json.dumps({'status':0, 'data':f'{len(upload_calls)}.png'}))
     context.route('**/permit/get?filename=*', lambda route:route.fulfill(content_type='image/png', body=image_bytes))
 
+    saved_counts = []
     def serve_submitlice(route) -> None:
+        saved_counts.append(len(route.request.post_data_json["upload_file"].split(",")))
         route.fulfill(
             status=200,
             content_type="application/json",
@@ -317,13 +339,15 @@ def test_new_audit_business_cleanup_and_one_qualification_per_form(
         with pytest.raises(PageFlowError, match="保存后页面文件不完整或未显示"):
             new_page.upload_type(qualification_type, 1)
         assert not new_page._saved_uploads
-        assert page.evaluate("window.batchSizes") == [1, 1, 1]
+        assert page.evaluate("window.batchSizes") == [1]
+        assert saved_counts == [1]
         context.close()
         return
     new_page.upload_type(qualification_type, 1)
     new_page.validate_final_collection(((qualification_type, 1),))
 
     assert page.evaluate("window.batchSizes") == [1, 1, 1, 1, 1]
+    assert saved_counts == [1, 2, 3, 1, 2]
     assert sorted(new_page._business_tabs()) == [1]
     assert len(new_page._file_inputs(1)) == 2
     assert page.locator(".file-form").evaluate_all(
@@ -892,13 +916,25 @@ def test_new_audit_uploads_only_inside_requested_business(browser, tmp_path: Pat
               'change', async event => {
                 for (const file of event.target.files) {
                   await fetch('/permit/web/permit/savelicepic', {method: 'POST'});
+                  form.dataset.uploadedCount = String(Number(form.dataset.uploadedCount || 0) + 1);
                 }
               }
             );
-            form.addEventListener('mouseleave', () => {
-              if (form.querySelector('input[type="file"]').files.length) {
-                fetch('/permit/web/permit/submitlice', {method: 'POST'});
+            let leaveTimer = null;
+            let savedSnapshot = null;
+            const handleSubmit = () => {
+              const count = Number(form.dataset.uploadedCount || 0);
+              const snapshot = count + '|' + form.querySelector('.evidence').value;
+              if (count && snapshot !== savedSnapshot) {
+                savedSnapshot = snapshot;
+                return fetch('/permit/web/permit/submitlice', {method: 'POST'});
               }
+            };
+            form.__vueParentComponent = {subTree:{el:form},exposed:{handleSubmit}};
+            form.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
+            form.addEventListener('mouseleave', () => {
+              clearTimeout(leaveTimer);
+              leaveTimer = setTimeout(handleSubmit, 300);
             });
           }
           function addForm(card) {
@@ -952,7 +988,7 @@ def test_new_audit_uploads_only_inside_requested_business(browser, tmp_path: Pat
     assert page.locator("#card-2 .evidence").evaluate_all(
         "elements => elements.map(element => element.value)"
     ) == ["https://example.test/evidence"]
-    assert requests["value"] == 1
+    assert requests["value"] == 3
     page.close()
 
 
