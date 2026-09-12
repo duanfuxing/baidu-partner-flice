@@ -1,0 +1,17 @@
+{
+  "round": 5,
+  "exit_code": 0,
+  "started_at": "2026-09-12T20:06:33+08:00",
+  "completed_at": "2026-09-12T20:09:54+08:00",
+  "company_count": 1,
+  "type_count": 4,
+  "qualification_count": 11,
+  "file_count": 19,
+  "restored_files": 9,
+  "newly_uploaded_files": 10,
+  "qualification_submission_completed": true,
+  "final_submission_completed": false,
+  "scheduler_status": "success",
+  "source_unchanged": true,
+  "manual_interventions": 0
+}

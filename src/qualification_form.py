@@ -1,4 +1,4 @@
-"""资质弹窗上传、OCR处理、字段覆盖和提交。"""
+"""已废弃：旧版 /flice 资质弹窗、OCR、字段覆盖和提交的历史实现。"""
 
 from __future__ import annotations
 

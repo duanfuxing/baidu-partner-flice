@@ -1,0 +1,18 @@
+{
+  "exit_code": 0,
+  "companies_succeeded": 1,
+  "failures": 0,
+  "company_status": "success",
+  "qualifications": 11,
+  "files": 19,
+  "all_qualifications_success": true,
+  "restored_files": 7,
+  "new_uploads": 12,
+  "final_submission": false,
+  "source_unchanged": true,
+  "pending_companies": 0,
+  "running_companies": 0,
+  "native_recovery_triggered": false,
+  "started_at": "2026-09-12 20:51:32",
+  "finished_at": "2026-09-12 20:58:18"
+}

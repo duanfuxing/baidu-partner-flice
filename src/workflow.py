@@ -10,6 +10,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from playwright.sync_api import Error as PlaywrightError
+
 from .api_client import BaiduApiClient
 from .url_overview import search_url_overview
 from .browser import (
@@ -244,9 +246,15 @@ def _click_new_audit_qualification_view(page, timeout: int) -> None:
     raise PageFlowError("“资质信息审核”模块中找不到可见的“查看”入口")
 
 
+class _QualificationEntryUnavailable(PageFlowError):
+    """尚未进入任何资质业务操作的只读入口加载失败。"""
+
+
 def _wait_for_qualification_entry(page, timeout: int) -> str:
     deadline = time.monotonic() + timeout / 1000
     while time.monotonic() < deadline:
+        if BrowserSession._is_login_page(page):
+            raise AuthenticationRequired('资质入口跳转到登录页，请重新登录')
         if _visible_exact_text(page, "URL状态概览"):
             return "overview"
         if _visible_exact_text(page, "资质信息审核"):
@@ -254,7 +262,7 @@ def _wait_for_qualification_entry(page, timeout: int) -> str:
         if _visible_exact_text(page, "资质环节"):
             return "legacy"
         page.wait_for_timeout(100)
-    raise PageFlowError("资质页面未出现“资质信息审核”、“资质环节”或“URL状态概览”")
+    raise _QualificationEntryUnavailable("资质页面未出现“资质信息审核”、“资质环节”或“URL状态概览”")
 
 
 def _wait_for_overview_page(page, existing_pages: tuple, timeout: int):
@@ -283,8 +291,30 @@ def _wait_for_overview_page(page, existing_pages: tuple, timeout: int):
 def enter_qualification_page(page, qualification_url: str, timeout: int):
     """打开资质入口并返回实际承载 URL 状态概览的页面及其 URL。"""
 
-    page.goto(qualification_url, wait_until="domcontentloaded")
-    entry = _wait_for_qualification_entry(page, timeout)
+    for attempt in range(2):
+        try:
+            # 同一 SPA hash URL 的 goto 不一定重新加载文档。
+            if attempt and page.url == qualification_url:
+                response = page.reload(wait_until="domcontentloaded", timeout=timeout)
+            else:
+                response = page.goto(qualification_url, wait_until="domcontentloaded", timeout=timeout)
+            if response is not None:
+                if response.status in (401, 403):
+                    raise AuthenticationRequired('资质入口未授权，请重新登录')
+                if response.status >= 500:
+                    raise _QualificationEntryUnavailable(f'资质入口 HTTP {response.status}')
+                if response.status >= 400:
+                    raise PageFlowError(f'资质入口 HTTP {response.status}，停止导航')
+            entry = _wait_for_qualification_entry(page, timeout)
+            break
+        except (_QualificationEntryUnavailable, PlaywrightError) as exc:
+            if BrowserSession._is_login_page(page):
+                raise AuthenticationRequired('资质入口跳转到登录页，请重新登录') from None
+            if attempt:
+                message = str(exc) if isinstance(exc, _QualificationEntryUnavailable) else '资质入口导航未完成'
+                raise PageFlowError(f'{message}；只读重试后仍失败') from None
+            LOGGER.warning('资质入口加载未完成，同页重新打开原链接（只读重试1/1）')
+            page.wait_for_timeout(min(1000, timeout))
     if entry == "overview":
         if not is_qualification_submit_url(page.url):
             raise PageFlowError("“URL状态概览”所在页面 URL 不属于受支持的百度资质提交页面")
@@ -812,6 +842,8 @@ class WorkflowRunner:
     ) -> tuple[bool, bool, str | None]:
         if is_new_audit_qualification_detail_url(page.url):
             return self._run_new_audit_qualification(page, company)
+        # 已废弃：以下为旧版 /flice 历史分支；当前有效流程为 /newaudit。
+        # 本次仅标记废弃，保留分支代码以供后续独立移除。
         self._validate_legacy_qualification_fields(company)
         industry = IndustryQualificationPage(page, timeout=self.config.page_timeout_ms)
         panels = industry.scan_businesses()

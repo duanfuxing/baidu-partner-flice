@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -12,10 +13,11 @@ from urllib.parse import urlsplit
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .errors import PageFlowError
+from .card_save import CardSaveObserver, CARD_IDENTITY_JS
+from .detail_read_recovery import DetailReadRecovery
 from .upload_retry import upload_with_retry
 from .upload_identity import (UploadReceipt, preview_files, verify_file_identities,
-                              verify_preview_content, verify_saved_request,
-                              saved_request_has_files)
+                              verify_preview_content)
 
 LOGGER = logging.getLogger(__name__)
 from .models import CompanyInput, Qualification, QualificationType
@@ -125,6 +127,7 @@ class NewAuditQualificationPage:
         self._saved_file_receipts: dict[tuple[int, int], tuple[UploadReceipt, ...]] = {}
         self._saved_evidence: dict[tuple[int, int], str] = {}
         self._save_focus_session = None
+        self._detail_reads = DetailReadRecovery(page, timeout)
 
     @staticmethod
     def _visible(locator):
@@ -169,6 +172,7 @@ class NewAuditQualificationPage:
     ) -> None:
         deadline = time.monotonic() + (timeout or self.timeout) / 1000
         while time.monotonic() < deadline:
+            self._detail_reads.raise_if_failed()
             try:
                 if predicate():
                     return
@@ -225,6 +229,7 @@ class NewAuditQualificationPage:
                 timeout=self.timeout,
             )
         except PageFlowError:
+            self._detail_reads.raise_if_failed()
             return False
         tabs = self._visible(business_tabs)
         if not tabs:
@@ -249,6 +254,9 @@ class NewAuditQualificationPage:
 
         def list_settled() -> bool:
             nonlocal zero_since
+            if self._detail_reads.pending or time.monotonic() - self._detail_reads.last_finished < 0.3:
+                zero_since = None
+                return False
             if matching_rows():
                 return True
             zero_visible = bool(
@@ -271,8 +279,8 @@ class NewAuditQualificationPage:
                 "等待已备案业务资质列表加载超时",
                 timeout=self.timeout,
             )
-        except PageFlowError:
-            return False
+        except PageFlowError as exc:
+            raise PageFlowError(f'已备案业务资质列表读取未完成，不能将暂时空列表作为新增依据：{exc}') from exc
         rows = matching_rows()
         if len(rows) > 1:
             raise PageFlowError("存在多个已保存待送审的推广审查，无法安全恢复")
@@ -546,14 +554,72 @@ class NewAuditQualificationPage:
             "“新增业务资质”按钮",
         )
         add.click(timeout=self.timeout)
+        last_indices, stable_since = None, None
+
+        def added_and_stable():
+            nonlocal last_indices, stable_since
+            current = set(self._business_tabs())
+            if not before.issubset(current) or not current - before:
+                return False
+            if current != last_indices:
+                last_indices, stable_since = current, time.monotonic()
+                return False
+            return time.monotonic() - stable_since >= 0.5
+
         self._wait_until(
-            lambda: len(set(self._business_tabs()) - before) == 1,
+            added_and_stable,
             f"新增经营业务“{qualification_type.type_name}”后未出现新业务卡片",
         )
-        index = next(iter(set(self._business_tabs()) - before))
+        added = set(self._business_tabs()) - before
+        LOGGER.info('业务[%s]：新增前 %s 张，本次出现 %s 张新卡片', qualification_type.type_name, len(before), len(added))
+        if len(added) != 1:
+            if before:
+                raise PageFlowError('已有业务时出现多张新业务卡片，停止，不修改原业务')
+            return self._select_from_empty_default_businesses(qualification_type.type_name)
+        index = next(iter(added))
         self._click_business_tab(index)
         self._select_business_type(index, qualification_type.type_name)
         return index
+
+    def _select_from_empty_default_businesses(self, input_name: str) -> int:
+        """零业务起点重建了默认卡片；仅复用已确认全空的目标卡。"""
+        editable = []
+        for index in sorted(self._business_tabs()):
+            self._click_business_tab(index)
+            card = self._business_container(index)
+            if not self._file_inputs_in(card):
+                raise PageFlowError('默认业务上传表单未加载，无法确认空白状态')
+            for file_input in self._file_inputs_in(card):
+                form = self._upload_container(file_input)
+                fields = self._visible(form.locator('input:not([type="file"]):not([role="combobox"])'))
+                counts = form.locator('.file-count').all_inner_texts()
+                if (preview_files(form) or any(f.input_value().strip() for f in fields)
+                        or any(re.match(r'\s*[1-9]\d*\s*/', text) for text in counts)
+                        or self._visible(form.get_by_text('已保存待送审', exact=True))):
+                    raise PageFlowError('重新生成的默认业务卡片不是空白，停止，不清理已有资料')
+            inputs = self._visible(self._business_query_inputs(card))
+            if inputs and inputs[-1].is_editable():
+                editable.append(index)
+        matches = self._business_indices_matching(input_name)
+        if len(matches) > 1:
+            raise PageFlowError('默认业务中目标类型不唯一，停止，不删除业务')
+        if not matches:
+            if not editable:
+                # 空页的第一次新增只恢复固定类型默认组；保留该组再次
+                # 点击新增，页面才产生可选择经营业务的独立空白卡。
+                self.add_business(QualificationType(input_name, ()))
+            else:
+                self._click_business_tab(editable[0])
+                self._select_business_type(editable[0], input_name)
+        while True:
+            matches = self._business_indices_matching(input_name)
+            if len(matches) != 1:
+                raise PageFlowError('清理默认业务时目标类型不唯一，停止')
+            others = set(self._business_tabs()) - {matches[0]}
+            if not others:
+                return matches[0]
+            self._click_business_tab(max(others))
+            self._close_business_tab(max(others))
 
     def _select_business_type(self, business_index: int, input_name: str) -> None:
         mapping = mapping_for_input(input_name)
@@ -896,55 +962,54 @@ class NewAuditQualificationPage:
             raise PageFlowError('找不到当前资质卡片唯一的页面保存方法 handleSubmit，未调用其他提交入口')
         return handle
 
-    def _save_qualification_card(self, card_getter, container_getter, evidence, receipts, name):
-        responses = []
-        requests = []
+    def _save_qualification_card(self, card_getter, container_getter, evidence, receipts, name,
+                                 *, save_scope=None):
+        if save_scope is None:
+            with CardSaveObserver(self.page) as observer:
+                scope = (observer, observer.checkpoint(), card_getter().evaluate(CARD_IDENTITY_JS))
+                return self._save_observed_card(card_getter, evidence, receipts, name, scope)
+        return self._save_observed_card(card_getter, evidence, receipts, name, save_scope)
 
-        def on_request(request):
-            parsed = urlsplit(request.url)
-            if (parsed.scheme == 'https' and parsed.hostname == PERMIT_HOST
-                    and parsed.path == SUBMITLICE_PATH and request.method == 'POST'):
-                requests.append(request)
-
-        def on_response(response):
-            if (is_permit_post_response(response, SUBMITLICE_PATH)
-                    and (not receipts or saved_request_has_files(response, receipts))):
-                responses.append(response)
-
-        # 填写、滚动和失焦均可能触发保存，必须先监听。
+    def _save_observed_card(self, card_getter, evidence, receipts, name, scope, *, allow_trigger=True):
+        observer, cursor, identity = scope
         save_handle = None
-        self.page.on('request', on_request)
-        self.page.on('response', on_response)
         try:
-            card = card_getter()
-            self._scroll_upload_to_bottom(card)
-            field = self._unique_visible(card.locator('input:not([type="file"])'),
-                                         f'资质[{name}]的举证链接输入框')
-            if field.input_value().strip() != evidence:
-                field.click(timeout=self.timeout)
-                field.fill(evidence)
+            if allow_trigger:
+                card = card_getter()
+                self._scroll_upload_to_bottom(card)
+                field = self._unique_visible(card.locator('input:not([type="file"])'),
+                                             f'资质[{name}]的举证链接输入框')
+                if field.input_value().strip() != evidence:
+                    field.click(timeout=self.timeout)
+                    field.fill(evidence)
+                card_getter().hover(timeout=self.timeout)
             deadline = time.monotonic() + self.timeout / 1000
-            # 保持鼠标在卡片内，取消页面 pending mouseleave 保存定时器。
-            card_getter().hover(timeout=self.timeout)
-            LOGGER.info('资质[%s]：调用当前卡片 handleSubmit 保存', name)
-            save_handle = self._invoke_card_save(card_getter())
+            # 填写和鼠标动作也可能保存，动作后再次检查全程观察结果。
+            state = 'absent'
             while time.monotonic() < deadline:
-                if responses:
-                    response = responses[0]
-                    self._submitlice_response(response, name)
-                    if receipts:
-                        verify_saved_request(response, receipts, evidence)
+                state, event = observer.state(cursor, identity, receipts, evidence)
+                if state == 'saved':
                     LOGGER.info('资质[%s]：保存接口成功（HTTP 200，status=0），开始核对页面回填', name)
-                    return response
-                if save_handle.evaluate('element => element.__bpfSaveFailed === true'):
+                    return event.response
+                if state == 'unknown':
+                    if observer.readback(cursor, identity, receipts, evidence, self.timeout):
+                        LOGGER.info('资质[%s]：保存响应未知，已通过详情接口核对持久化文件与举证', name)
+                        return None
+                    raise PageFlowError(f'资质[{name}]保存结果未知，详情核对未确认，未重复上传或保存')
+                if state in ('absent', 'different') and save_handle is None:
+                    if not allow_trigger:
+                        raise PageFlowError(f'资质[{name}]核验期间保存状态发生变化，未上传下一个文件')
+                    LOGGER.info('资质[%s]：调用当前卡片 handleSubmit 保存', name)
+                    save_handle = self._invoke_card_save(card_getter())
+                if save_handle is not None and save_handle.evaluate('element => element.__bpfSaveFailed === true'):
                     raise PageFlowError(f'资质[{name}]页面保存方法执行失败，未上传下一个文件')
                 self.page.wait_for_timeout(100)
-            if requests:
-                raise PageFlowError(f'资质[{name}]已发出保存请求，但未收到匹配的保存响应，未重复提交')
+            if state == 'pending':
+                raise PageFlowError(f'资质[{name}]已发出保存请求，但请求仍未结束，未重复提交')
+            if observer.related(cursor, identity, receipts):
+                raise PageFlowError(f'资质[{name}]保存请求的卡片、文件或举证与预期不一致，未上传下一个文件')
             raise PageFlowError(f'资质[{name}]已调用页面保存方法，但未发出保存请求，请检查页面校验提示')
         finally:
-            self.page.remove_listener('request', on_request)
-            self.page.remove_listener('response', on_response)
             if save_handle is not None:
                 save_handle.dispose()
 
@@ -1143,6 +1208,7 @@ class NewAuditQualificationPage:
         *,
         receipts=(),
         evidence: str = "",
+        save_scope=None,
     ) -> None:
         """仅在保存响应通过校验后调用，等待当前卡片数据持续一致。"""
 
@@ -1159,15 +1225,49 @@ class NewAuditQualificationPage:
         last_log = 0.0
         reason = "尚未读取当前卡片"
         status_visible = False
+        missing_since = None
+        recovery_attempted = False
+
+        def recover_missing_card():
+            nonlocal recovery_attempted
+            if (recovery_attempted or save_scope is None or not receipts
+                    or self._detail_reads.pending
+                    or time.monotonic() - self._detail_reads.last_finished < 1.0):
+                return
+            observer, cursor, identity = save_scope
+            if any(not event.finished and not event.failed for event in observer.events):
+                return
+            state, _ = observer.state(cursor, identity, receipts, evidence)
+            if state != 'saved':
+                return
+            recovery_attempted = True
+            if not observer.readback(cursor, identity, receipts, evidence, self.timeout):
+                LOGGER.warning('资质[%s]：卡片缺失且只读核对未通过，未刷新或重复写入', qualification_name)
+                return
+            # readback 会泵送事件，调用页面刷新前再次排除迟到写入。
+            if (any(not event.finished and not event.failed for event in observer.events)
+                    or observer.state(cursor, identity, receipts, evidence)[0] != 'saved'):
+                return
+            container = container_getter()
+            if container is None:
+                return
+            refreshed = self._refresh_business_from_page(container)
+            LOGGER.info('资质[%s]：已核实服务端保存，页面原生业务刷新%s（最多一次，无重复上传或保存）',
+                        qualification_name, '已完成' if refreshed else '不可用或未完成')
 
         def settled() -> bool:
-            nonlocal stable_since, last_log, reason, status_visible
+            nonlocal stable_since, last_log, reason, status_visible, missing_since
             issues = []
             try:
                 card = current_card()
                 if card is None:
                     issues.append("当前资质卡片未出现")
+                    if missing_since is None:
+                        missing_since = time.monotonic()
+                    elif time.monotonic() - missing_since >= 2.0:
+                        recover_missing_card()
                 else:
+                    missing_since = None
                     # 相邻资质卡的独立 loading 与本次保存无关；祖先的遮罩
                     # 会阻挡当前卡片，包含挂在 body 的全屏 loading，仍须等待。
                     loading = card.evaluate("""element => {
@@ -1226,6 +1326,40 @@ class NewAuditQualificationPage:
             LOGGER.info('资质[%s]：保存响应及文件、举证已核验，页面状态文案尚未同步', qualification_name)
         LOGGER.info('资质[%s]：保存后当前卡片已稳定', qualification_name)
 
+    def _refresh_business_from_page(self, container) -> bool:
+        """使用已核查的 BusinessFormCard.onInit，只让页面重新读取业务。"""
+        root = container.locator('.business-form-card')
+        # 新增页的 container 本身就是业务卡；编辑页的 container 是 page。
+        if hasattr(container, 'evaluate') and not hasattr(container, 'url'):
+            if container.evaluate("e => e.matches('.business-form-card')"):
+                root = container
+        visible = self._visible(root)
+        if len(visible) != 1:
+            return False
+        return visible[0].evaluate("""async (element, timeout) => {
+          const matches = new Set(), seen = new Set();
+          const consider = c => {
+            const owns = c?.subTree?.el === element
+              || (Array.isArray(c?.subTree?.children) && c.subTree.children.some(v=>v?.el===element));
+            if (c?.type?.__name === 'BusinessFormCard' && owns
+                && typeof c.vnode?.props?.onInit === 'function') matches.add(c);
+          };
+          for (let c=element.__vueParentComponent;c;c=c.parent) consider(c);
+          let root=element;while(root&&!root._vnode)root=root.parentElement;
+          const walk=v=>{if(!v||typeof v!=='object'||seen.has(v))return;seen.add(v);
+            if(v.component){consider(v.component);walk(v.component.subTree);}
+            if(Array.isArray(v.children))v.children.forEach(walk);
+            if(v.suspense)walk(v.suspense.activeBranch);};
+          walk(root?._vnode);
+          if(matches.size!==1)return false;
+          const component=[...matches][0];if(component.isUnmounted)return false;
+          let timer;
+          try{return await Promise.race([
+            Promise.resolve(component.vnode.props.onInit()).then(()=>true,()=>false),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(false),timeout);})]);
+          }finally{clearTimeout(timer);}
+        }""", min(self.timeout, 10_000))
+
     def upload_type(self, qualification_type: QualificationType, business_index: int) -> None:
         self._click_business_tab(business_index)
         self._upload_type_in(
@@ -1239,6 +1373,8 @@ class NewAuditQualificationPage:
         qualification_type: QualificationType,
         business_key: int,
         container_getter,
+        *,
+        resume_existing: bool = False,
     ) -> None:
         qualifications = qualification_type.qualifications
         if not qualifications:
@@ -1249,7 +1385,11 @@ class NewAuditQualificationPage:
                 f"业务“{qualification_type.type_name}”需要{main_form_count}个内置必填资质，"
                 f"输入仅提供{len(qualifications)}个资质目录"
             )
-        self._discard_empty_initial_supplements(container_getter)
+        if resume_existing:
+            if len(self._file_inputs_in(container_getter())) > len(qualifications):
+                raise PageFlowError('已保存资质卡片多于输入目录，停止，不删除已有资料')
+        else:
+            self._discard_empty_initial_supplements(container_getter)
         for index, qualification in enumerate(qualifications):
             LOGGER.info("业务[%s] 资质[%s]：准备第 %s 张卡片，共 %s 个文件", qualification_type.type_name, qualification.index_name, index + 1, len(qualification.files))
             # 一个资质目录对应一张卡片，目录内文件逐个上传并等待回填；
@@ -1261,6 +1401,14 @@ class NewAuditQualificationPage:
                     f"业务“{qualification_type.type_name}”创建第{index + 1}个"
                     f"资质卡片失败：{exc}"
                 ) from exc
+            self._upload_qualification_in(qualification_type, business_key, index, container_getter,
+                                          resume_existing=resume_existing)
+
+    def _upload_qualification_in(self, qualification_type, business_key, index, container_getter,
+                                 *, resume_existing=False):
+        """上传一张指定卡片；监听在首个文件及任何鼠标操作之前建立。"""
+        qualification = qualification_type.qualifications[index]
+        with CardSaveObserver(self.page) as observer:
             inputs = self._file_inputs_in(container_getter())
             if len(inputs) < index + 1:
                 raise PageFlowError(
@@ -1286,13 +1434,32 @@ class NewAuditQualificationPage:
                     return 0
                 return None
 
-            batches = [(path,) for path in paths]
             receipts = []
-            # 鼠标进入当前卡片，取消页面尚未执行的 mouseleave 自动保存。
-            self._scroll_upload_to_bottom(current_card())
-            current_card().hover(timeout=self.timeout)
-            uploaded_total = 0
+            existing = preview_files(current_card())
+            if existing:
+                if not resume_existing:
+                    raise PageFlowError('上传目标卡片非空，未重复上传')
+                if len(existing) > len(paths) or not all(item['id'] for item in existing):
+                    raise PageFlowError('已保存文件数量或身份与输入不符，未修改已有资料')
+                if not self._visible(current_card().get_by_text('已保存待送审', exact=True)):
+                    raise PageFlowError('当前卡片不是已保存待送审状态，不能确认续传起点')
+                receipts = [UploadReceipt(path, hashlib.sha256(path.read_bytes()).hexdigest(), item['id'])
+                            for path, item in zip(paths, existing)]
+                self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
+                self._preview_cards.add((business_key, index))
+                evidence = qualification.evidence_url or ''
+                field = self._unique_visible(current_card().locator('input:not([type="file"])'), '已有资质举证链接')
+                if field.input_value().strip() != evidence:
+                    self._save_qualification_card(current_card, container_getter, evidence, receipts, qualification.index_name)
+                self._wait_for_card_save_settle(container_getter, index, qualification.index_name,
+                                                 receipts=receipts, evidence=evidence)
+                LOGGER.info('业务[%s] 资质[%s]：已核验并恢复 %s 个已保存文件，仅续传缺失文件',
+                            qualification_type.type_name, qualification.index_name, len(receipts))
+            batches = [(path,) for path in paths[len(receipts):]]
+            uploaded_total = len(receipts)
             for batch in batches:
+                # 身份必须在上传前快照：首次保存后页面会获得新的 lice_index。
+                save_scope = (observer, observer.checkpoint(), current_card().evaluate(CARD_IDENTITY_JS))
                 description = f"业务[{qualification_type.type_name}] 资质[{qualification.index_name}] 文件[{', '.join(path.name for path in batch)}]"
 
                 def trigger():
@@ -1332,15 +1499,20 @@ class NewAuditQualificationPage:
                 LOGGER.info("业务[%s] 资质[%s]：%s举证链接", qualification_type.type_name, qualification.index_name, "填写" if evidence else "清空/不填写")
                 self._save_qualification_card(
                     current_card, container_getter, evidence, receipts, qualification.index_name,
+                    save_scope=save_scope,
                 )
                 self._wait_for_card_save_settle(
                     container_getter, index, qualification.index_name,
                     receipts=receipts, evidence=evidence,
+                    save_scope=save_scope,
                 )
                 self._verify_saved_file_count(current_card(), uploaded_total, qualification.index_name,
                                              required=(business_key, index) in self._preview_cards)
                 if receipts:
                     self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
+                # 页面回填与内容核验也会泵送迟到事件，再确认没有较晚写入覆盖本次结果。
+                self._save_observed_card(current_card, evidence, receipts, qualification.index_name,
+                                         save_scope, allow_trigger=False)
                 LOGGER.info('%s：逐文件保存成功，累计 %s 个文件', description, uploaded_total)
             if receipts:
                 self._verify_file_receipts(current_card, receipts, qualification.index_name, content=True)
@@ -1475,7 +1647,7 @@ class NewAuditQualificationPage:
         assignments: list[tuple[QualificationType, int]] = []
         LOGGER.info("推广审查：%s", "恢复已有草稿" if resumed_promotion else "准备默认业务")
         if resumed_promotion:
-            self._upload_type_in(types[0], 0, lambda: self.page)
+            self._upload_type_in(types[0], 0, lambda: self.page, resume_existing=True)
             self._validate_uploaded_scope(types[0], 0, self.page)
             self._return_from_promotion_edit()
             self._saved_uploads.clear()

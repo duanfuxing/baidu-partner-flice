@@ -79,30 +79,47 @@ def _query_and_wait(page, region, button, timeout, target_url):
     for event, handler in handlers.items():
         page.on(event, handler)
     try:
-        button.click(timeout=timeout)
         started = time.monotonic()
         deadline, next_log = started + timeout / 1000, started + 10
+        attempt, data, quiet_since = 1, None, None
+        button.click(timeout=timeout)
         while True:
-            if len(requests) > 1:
-                raise PageFlowError('本轮出现多个URL查询请求，无法确定结果归属，停止，不使用旧结果')
-            if failed:
-                raise PageFlowError('URL查询接口网络请求失败，停止，不使用旧结果')
-            if requests and requests[0] in finished and requests[0] in responses:
-                data = _query_data(responses[requests[0]])
-                break
             now = time.monotonic()
             if now >= deadline:
-                reason = '请求已发出但未完整返回' if requests else '未检测到本轮匹配请求'
+                reason = ('响应对应的表格回填超时' if data is not None else
+                          '请求已发出但未完整返回' if requests else '未检测到本轮匹配请求')
                 raise PageFlowError(f'等待URL查询接口超时：{reason}，停止，不使用旧结果')
-            if now >= next_log:
-                LOGGER.info('URL列表：等待geturllist，已等待%.0f秒（%s）',
-                            now - started, '请求已发出' if requests else '尚未检测到匹配请求')
-                next_log = now + 10
-            page.wait_for_timeout(100)
-        LOGGER.info('URL列表：geturllist成功（HTTP 200，status=0），共%s条，等待页面回填', data['count'])
-        # 直接核对响应的URL和URL ID，既允许相同结果不重建DOM，也不误用旧行。
-        expected = [{'url': row['url'], 'id': str(row['urlid'])} for row in data['list']]
-        page.wait_for_function("""({root, expected}) => {
+            if len(requests) > 1:
+                # 初始化和页面查询可能竞争；不猜最新响应，整轮结束后再查一次。
+                if any(r.status in (401, 403) for r in responses.values()):
+                    raise AuthenticationRequired('URL查询接口未授权，请重新登录')
+                settled = all(r in finished or r in failed for r in requests)
+                version = (len(requests), len(finished), len(failed))
+                if not settled:
+                    quiet_since = None
+                elif quiet_since is None or quiet_since[0] != version:
+                    quiet_since = (version, now)
+                elif now - quiet_since[1] >= 0.5:
+                    if attempt >= 2:
+                        raise PageFlowError('URL查询重查后仍出现多个请求，无法确定结果归属，停止，不使用旧结果')
+                    LOGGER.info('URL列表：检测到查询竞争，旧请求均已结束，重新点击查询（1/1）')
+                    requests.clear()
+                    responses.clear()
+                    finished.clear()
+                    failed.clear()
+                    data, quiet_since = None, None
+                    attempt += 1
+                    region.evaluate('root => { delete root.__urlSearchStableSince; }')
+                    button.click(timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+                    continue
+            elif failed:
+                raise PageFlowError('URL查询接口网络请求失败，停止，不使用旧结果')
+            elif requests and requests[0] in finished and requests[0] in responses:
+                if data is None:
+                    data = _query_data(responses[requests[0]])
+                    LOGGER.info('URL列表：geturllist成功（HTTP 200，status=0），共%s条，等待页面回填', data['count'])
+                expected = [{'url': row['url'], 'id': str(row['urlid'])} for row in data['list']]
+                matches = region.evaluate("""(root, expected) => {
             const visible = e => !!e.getClientRects().length;
             const loading = [...root.querySelectorAll('.el-skeleton, .el-skeleton__item, .el-loading-mask')].some(visible);
             const rows = [...root.querySelectorAll('tbody tr')].filter(row =>
@@ -115,10 +132,15 @@ def _query_and_wait(page, region, button, timeout, target_url):
             if (!matches) { delete root.__urlSearchStableSince; return false; }
             root.__urlSearchStableSince ??= performance.now();
             return performance.now() - root.__urlSearchStableSince >= 200;
-        }""", arg={'root': region.element_handle(), 'expected': expected}, timeout=timeout)
-        if len(requests) != 1 or failed:
-            raise PageFlowError('页面回填期间URL查询请求发生变化，停止，不使用旧结果')
-        return data
+        }""", expected)
+                # evaluate 会泵送网络事件，返回前再次检查是否出现另一轮查询。
+                if matches and len(requests) == 1 and not failed:
+                    return data
+            if now >= next_log:
+                LOGGER.info('URL列表：等待geturllist，已等待%.0f秒（%s）',
+                            now - started, '请求已发出' if requests else '尚未检测到匹配请求')
+                next_log = now + 10
+            page.wait_for_timeout(100)
     except (AuthenticationRequired, PageFlowError):
         raise
     except Exception:

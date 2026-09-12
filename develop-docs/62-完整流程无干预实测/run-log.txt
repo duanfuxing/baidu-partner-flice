@@ -1,0 +1,16 @@
+2026-09-12 19:26:20 INFO MainProcess 任务日志：/Users/dl/Library/Application Support/BaiduPartnerFlice/logs/run-20260912-192620-2696b0f4.log
+2026-09-12 19:26:20 INFO MainProcess 输入校验通过，已生成 1 个 input.json；开始打开 Chrome
+2026-09-12 19:26:28 INFO MainProcess 已检测到登录状态，跳过人工登录
+2026-09-12 19:26:29 INFO MainProcess 登录状态已确认并保存，登录 Chrome 已关闭
+2026-09-12 19:26:29 INFO MainProcess 调度 1 个公司，使用单 worker 串行处理
+2026-09-12 19:26:29 INFO SpawnProcess-1 [东莞山虞医药有限公司] 正在启动独立 Chrome
+2026-09-12 19:26:31 INFO SpawnProcess-1 [东莞山虞医药有限公司] 独立 Chrome 已启动，开始处理公司
+2026-09-12 19:26:31 INFO SpawnProcess-1 [东莞山虞医药有限公司] 查询公司并获取资质流程链接
+2026-09-12 19:26:31 INFO SpawnProcess-1 [东莞山虞医药有限公司] 步骤 1：按公司名称查询唯一客户
+2026-09-12 19:26:33 INFO SpawnProcess-1 [东莞山虞医药有限公司] 步骤 2：获取资质流程链接
+2026-09-12 19:26:34 INFO SpawnProcess-1 [东莞山虞医药有限公司] 已获取资质流程链接，开始进入资质页面
+2026-09-12 19:26:43 INFO SpawnProcess-1 [东莞山虞医药有限公司] 资质概览已打开：按输入 URL 匹配记录并进入详情
+2026-09-12 19:26:44 INFO SpawnProcess-1 [东莞山虞医药有限公司] URL列表：输入目标链接并点击查询
+2026-09-12 19:26:44 ERROR SpawnProcess-1 [东莞山虞医药有限公司] 发生错误，保留当前页面5秒后关闭浏览器，请查看页面提示
+2026-09-12 19:26:49 ERROR SpawnProcess-1 [东莞山虞医药有限公司] 公司处理失败，Chrome 已关闭：本轮出现多个URL查询请求，无法确定结果归属，停止，不使用旧结果
+2026-09-12 19:26:49 ERROR MainProcess 公司处理失败：东莞山虞医药有限公司：本轮出现多个URL查询请求，无法确定结果归属，停止，不使用旧结果

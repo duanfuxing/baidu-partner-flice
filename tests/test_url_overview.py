@@ -215,3 +215,85 @@ def test_query_business_error_does_not_log_response_secrets():
 def test_query_unauthorized_requires_login(status):
     with pytest.raises(AuthenticationRequired, match='重新登录'):
         _query_data(Mock(status=status))
+
+
+@pytest.mark.parametrize('mode', ['duplicate', 'initial_error', 'out_of_order', 'pending', 'recurrent', 'during_render', 'unauthorized'])
+def test_overlapping_query_drains_then_requeries_once(browser, monkeypatch, mode):
+    page = browser.new_page()
+    page.route('**/*', lambda r: r.fulfill(body='test'))
+    page.goto('https://fkzhunru.baidu.com/test')
+    target = 'https://example.test/current'
+    page.set_content('''<section><button onclick="query()">查询</button>
+      <table><tbody><tr><td>11</td><td><a href="#">https://example.test/current</a></td></tr></tbody></table></section>
+      <script>
+      window.clicks=0;window.serial=0;
+      async function send(){
+        const id=++window.serial;
+        const response=await fetch('/permit/web/permit/geturllist?url='+encodeURIComponent('https://example.test/current')+'&page_num=1&seq='+id);
+        const body=await response.json();
+        if(body.status===0)document.querySelector('td').textContent=body.data.list[0].urlid;
+      }
+      function query(){
+        window.clicks++;
+        send();
+        if(window.clicks===1 || MODE==='recurrent') {
+          if(MODE==='during_render')setTimeout(send,100);else send();
+        }
+      }
+      </script>'''.replace('MODE', json.dumps(mode)))
+    held, seen = [], []
+    def serve(route):
+        seq=int(parse_qs(urlsplit(route.request.url).query)['seq'][0]);seen.append(seq)
+        if seq==1 and mode in ('pending','out_of_order'):
+            held.append(route);return
+        if seq>=3:
+            assert not held, 'new query started while old request still pending'
+        route.fulfill(status=401 if mode=='unauthorized' and seq==1 else 200,
+                      json={'status':1011 if mode=='initial_error' and seq==1 else 0,
+                            'data':{'count':1,'list':[{'url':target,'urlid':33 if seq>=3 else 22}]}})
+    page.route('**/geturllist?*',serve)
+    wait=page.wait_for_timeout
+    def release(ms):
+        wait(ms)
+        if held and mode=='out_of_order' and len(seen)>=2:
+            held.pop().fulfill(json={'status':0,'data':{'count':1,'list':[{'url':target,'urlid':21}]}})
+    monkeypatch.setattr(page,'wait_for_timeout',release)
+    try:
+        if mode in ('pending','recurrent','unauthorized'):
+            with pytest.raises(AuthenticationRequired if mode=='unauthorized' else PageFlowError):
+                _query_and_wait(page,page.locator('section'),page.get_by_role('button'),2200,target)
+            assert page.evaluate('window.clicks')==(2 if mode=='recurrent' else 1)
+        else:
+            data=_query_and_wait(page,page.locator('section'),page.get_by_role('button'),2500,target)
+            assert data['list'][0]['urlid']==33
+            assert page.locator('td').first.inner_text()=='33'
+            assert page.evaluate('window.clicks')==2
+            assert seen==[1,2,3]
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('mode', ['blank_then_ready','always_blank','http_503','http_404','auth','login'])
+def test_initial_entry_readonly_retry_is_bounded(browser, mode):
+    from src.workflow import enter_qualification_page
+    page=browser.new_page();seen=[]
+    landing='https://fkzhunru.baidu.com/newaudit#/lice/submit/test'
+    def serve(route):
+        seen.append(1)
+        if mode=='login':
+            route.fulfill(content_type='text/html',body='<script>location.href="https://passport.baidu.com/login"</script>');return
+        status=401 if mode=='auth' else 404 if mode=='http_404' else 503 if mode=='http_503' and len(seen)==1 else 200
+        ready=(mode in ('blank_then_ready','http_503') and len(seen)>1)
+        route.fulfill(status=status,content_type='text/html; charset=utf-8',body='<h2>URL状态概览</h2>' if ready else '<p>loading</p>')
+    page.route('https://fkzhunru.baidu.com/**',serve)
+    page.route('https://passport.baidu.com/**',lambda r:r.fulfill(body='login'))
+    try:
+        if mode in ('blank_then_ready','http_503'):
+            assert enter_qualification_page(page,landing,500)[0] is page
+            assert len(seen)==2
+        else:
+            with pytest.raises(AuthenticationRequired if mode in ('auth','login') else PageFlowError):
+                enter_qualification_page(page,landing,500)
+            assert len(seen)==(2 if mode=='always_blank' else 1)
+    finally:
+        page.close()

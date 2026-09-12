@@ -1,0 +1,18 @@
+{
+  "command": ".venv/bin/python main.py --no-final-submit",
+  "exit_code": 1,
+  "companies": 1,
+  "types": 4,
+  "qualifications": 11,
+  "files": 19,
+  "source_unchanged": true,
+  "changed_source_files": [],
+  "status": "failed",
+  "error": "本轮出现多个URL查询请求，无法确定结果归属，停止，不使用旧结果",
+  "reached_qualification_upload": false,
+  "final_submission": false,
+  "interventions": [],
+  "reruns": 0,
+  "queued_companies": 0,
+  "running_companies": 0
+}

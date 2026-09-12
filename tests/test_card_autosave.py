@@ -75,7 +75,7 @@ def test_active_autosave(browser, mode, monkeypatch):
         else:
             view._save_qualification_card(card, lambda: page.locator('section'), 'proof', [], '资质2')
         assert len(requests) == (0 if mode in ('never', 'throw') else 1)
-        assert page.evaluate('window.methodCalls') == 1
+        assert page.evaluate('window.methodCalls') == (0 if mode == 'fill' else 1)
         assert page.evaluate('window.leaves') == 0
     finally:
         page.close()

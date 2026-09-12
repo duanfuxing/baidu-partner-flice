@@ -8,7 +8,7 @@ WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "build-desktop.yml"
 INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer.iss"
 X64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-x64.iss"
 ARM64_INSTALLER_PATH = PROJECT_ROOT / "packaging" / "windows-installer-arm64.iss"
-EXPECTED_VERSION = "0.30.16"
+EXPECTED_VERSION = "0.30.17"
 
 
 def test_workflow_does_not_build_on_branch_push() -> None:
